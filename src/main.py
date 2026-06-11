@@ -1,8 +1,12 @@
 from fastapi import FastAPI
 from langchain_core.prompts import PromptTemplate
 from langchain_community.llms import FakeListLLM
+from src.controllers.file_controller import router as file_router
 
 app = FastAPI()
+
+# Register routers
+app.include_router(file_router)
 
 @app.get("/")
 def checkHealth():
