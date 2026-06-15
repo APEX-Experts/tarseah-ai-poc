@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     # Allowed file extensions (must start with a dot, lowercase)
     allowed_extensions: List[str] = Field(
-        default=[".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".txt", ".csv", ".json"],
+        default=[".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".txt", ".csv", ".json", ".doc", ".docx", ".md"],
         description="Allowed file extensions for upload"
     )
 
@@ -36,15 +36,31 @@ class Settings(BaseSettings):
             "application/pdf",
             "text/plain",
             "text/csv",
-            "application/json"
+            "application/json",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "text/markdown",
+            "text/x-markdown"
         ],
         description="Allowed content types for upload"
     )
 
-    # Maximum file size in bytes (default: 10 MB)
+    # Maximum file size in bytes for standard files (default: 10 MB)
     max_file_size: int = Field(
         default=10 * 1024 * 1024,
-        description="Maximum allowed file size in bytes (default 10MB)"
+        description="Maximum allowed file size in bytes for standard files (default 10MB)"
+    )
+
+    # Maximum file size in bytes for large files like PDF, Word, and MD (default: 500 MB)
+    max_large_file_size: int = Field(
+        default=500 * 1024 * 1024,
+        description="Maximum allowed file size in bytes for large file formats like PDF, Word, MD (default 500MB)"
+    )
+
+    # List of extensions allowed to be large
+    large_file_extensions: List[str] = Field(
+        default=[".pdf", ".doc", ".docx", ".md"],
+        description="File extensions allowed to use the large file limit"
     )
 
 settings = Settings()

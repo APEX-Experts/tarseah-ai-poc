@@ -1,6 +1,6 @@
 import os
-from pydantic import BaseModel, Field, field_validator
-from src.helpers.config import settings
+from pydantic import BaseModel, Field, field_validator, model_validator
+from helpers.config import settings
 
 class FileValidationSchema(BaseModel):
     filename: str = Field(..., description="The original name of the uploaded file")
@@ -41,16 +41,27 @@ class FileValidationSchema(BaseModel):
             
         return normalized_content_type
 
-    @field_validator("size")
-    @classmethod
-    def validate_size(cls, size: int) -> int:
+    @model_validator(mode="after")
+    def validate_size_for_extension(self) -> 'FileValidationSchema':
+        filename = self.filename
+        size = self.size
+        
         if size <= 0:
             raise ValueError("File size must be greater than 0.")
             
-        if size > settings.max_file_size:
-            max_mb = settings.max_file_size / (1024 * 1024)
+        _, ext = os.path.splitext(filename.lower())
+        
+        if ext in settings.large_file_extensions:
+            limit = settings.max_large_file_size
+            limit_desc = "large file limit"
+        else:
+            limit = settings.max_file_size
+            limit_desc = "limit"
+            
+        if size > limit:
+            limit_mb = limit / (1024 * 1024)
             raise ValueError(
-                f"File size ({size} bytes) exceeds the limit of {max_mb:.2f} MB ({settings.max_file_size} bytes)."
+                f"File size ({size} bytes) exceeds the {limit_desc} of {limit_mb:.2f} MB ({limit} bytes) for extension '{ext}'."
             )
             
-        return size
+        return self

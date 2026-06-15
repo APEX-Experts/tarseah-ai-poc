@@ -1,12 +1,31 @@
 import os
 import uuid
-import aiofiles
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
+import aiofiles  # pyrefly: ignore[untyped-import]
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, status
 from pydantic import ValidationError
-from src.helpers.config import settings
-from src.models.file_validation import FileValidationSchema
+from helpers.config import settings
+from models.file_validation import FileValidationSchema
 
 router = APIRouter(prefix="/files", tags=["Files"])
+
+def sanitize_project_id(project_id: str) -> str:
+    """
+    Sanitize the project_id to ensure it's a valid directory name
+    and prevent directory traversal.
+    """
+    if not project_id or not project_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Project ID cannot be empty."
+        )
+    # Keep only alphanumeric characters, dashes, and underscores
+    clean_id = "".join(c for c in project_id if c.isalnum() or c in ("-", "_")).strip()
+    if not clean_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid project_id. It must contain alphanumeric characters, dashes, or underscores."
+        )
+    return clean_id
 
 def sanitize_and_unique_filename(filename: str) -> str:
     """
@@ -22,13 +41,20 @@ def sanitize_and_unique_filename(filename: str) -> str:
     unique_suffix = uuid.uuid4().hex[:8]
     return f"{clean_base}_{unique_suffix}{ext.lower()}"
 
-@router.post("/upload", status_code=status.HTTP_201_CREATED)
-async def upload_file(file: UploadFile = File(...)):
+@router.post("/upload/{project_id}", status_code=status.HTTP_201_CREATED)
+async def upload_file(
+    project_id: str,
+    file: UploadFile = File(...)
+):
     """
-    Upload a file, validate it using Pydantic, and save it in the Assets folder.
+    Upload a file, validate it using Pydantic, and save it in the Assets folder based on project ID.
     """
-    # Ensure Assets directory exists
-    settings.assets_dir.mkdir(parents=True, exist_ok=True)
+    # Sanitize project_id
+    project_id_clean = sanitize_project_id(project_id)
+
+    # Ensure project-specific directory exists inside Assets directory
+    project_dir = settings.assets_dir / project_id_clean
+    project_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Determine file size
     # In FastAPI/Starlette, file.size gets populated. If it's not present, we can read/seek.
@@ -68,9 +94,9 @@ async def upload_file(file: UploadFile = File(...)):
             }
         )
 
-    # 3. Save the file to Assets directory
+    # 3. Save the file to the project directory
     unique_filename = sanitize_and_unique_filename(validated_data.filename)
-    destination_path = settings.assets_dir / unique_filename
+    destination_path = project_dir / unique_filename
 
     try:
         async with aiofiles.open(destination_path, "wb") as out_file:
@@ -93,6 +119,7 @@ async def upload_file(file: UploadFile = File(...)):
             "saved_filename": unique_filename,
             "content_type": validated_data.content_type,
             "size_bytes": validated_data.size,
-            "saved_path": str(destination_path)
+            "saved_path": str(destination_path),
+            "project_id": project_id_clean
         }
     }
