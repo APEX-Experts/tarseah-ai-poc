@@ -3,10 +3,14 @@ Proposal Generation Controller
 ==============================
 
 Unified endpoint that merges file upload + Context_Initializer_Node execution
-into a single API call.
+into a single API call, and provides on-demand section generation via the
+Universal_Writer_Node.
 
-Endpoint:
+Endpoints:
   ``POST /proposals/initialize/{project_id}``
+  ``POST /proposals/generate/{project_id}/{section_type}``
+  ``GET  /proposals/sections/{project_id}``
+  ``GET  /proposals/sections/{project_id}/{section_type}``
 
 Flow:
   1. Accept **one or more** files via multipart ``files`` field.
@@ -35,12 +39,18 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, status
 from pydantic import ValidationError
 
 from helpers.config import settings
+from helpers.shared_memory import load_shared_memory, PROPOSAL_SECTIONS
 from models.file_validation import FileValidationSchema
 from models.proposal_state import ProposalState
 from nodes.context_initializer import context_initializer_node
+from nodes.universal_writer import universal_writer_node
+from nodes.prompts_config import SECTIONS_CONFIG
 from controllers.file_controller import sanitize_project_id
 
 router = APIRouter(prefix="/proposals", tags=["Proposals"])
+
+# Storage root — same convention used by all nodes
+_STORAGE_ROOT = Path(__file__).resolve().parent.parent / "storage"
 
 
 # ---------------------------------------------------------------------------
@@ -119,12 +129,13 @@ async def _save_file(file: UploadFile, dest_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Endpoint: Initialize Project
 # ---------------------------------------------------------------------------
 
 @router.post("/initialize/{project_id}", status_code=status.HTTP_200_OK)
 async def initialize_proposal(
     project_id: str,
+    force_reset: bool = False,
     file: Optional[List[UploadFile]] = File(None, description="One or more files uploaded under key 'file'"),
     files: Optional[List[UploadFile]] = File(None, description="One or more files uploaded under key 'files'"),
     tender_file: Optional[UploadFile] = File(None, description="Tender RFP document"),
@@ -201,7 +212,7 @@ async def initialize_proposal(
         })
 
     # 5. Run the Context_Initializer_Node
-    initial_state: ProposalState = {"project_id": clean_project_id}
+    initial_state: ProposalState = {"project_id": clean_project_id, "force_reset": force_reset}
     node_result = context_initializer_node(initial_state)
 
     if "error" in node_result:
@@ -224,3 +235,212 @@ async def initialize_proposal(
             "sections_initialized": list(node_result.get("sections", {}).keys()),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: Generate a Section (Universal_Writer_Node)
+# ---------------------------------------------------------------------------
+
+@router.post("/generate/{project_id}/{section_type}", status_code=status.HTTP_200_OK)
+async def generate_section(project_id: str, section_type: str):
+    """
+    Generate a single proposal section using the Universal_Writer_Node.
+
+    This endpoint is called **on-demand** by the frontend whenever the user
+    wants to draft a specific section. It:
+
+    1. Validates the project exists and has been initialized.
+    2. Loads the shared_memory.json to get tender/company text and
+       previously generated sections.
+    3. Invokes Gemini via the Universal_Writer_Node.
+    4. Returns the generated Markdown and persists it to the JSON file.
+
+    **Path Parameters:**
+      - ``project_id``: The project identifier (must match an initialized project).
+      - ``section_type``: One of the 11 section keys (e.g. ``methodology``).
+
+    **Valid section_type values:**
+      ``cover_letter``, ``executive_summary``, ``scope_understanding``,
+      ``vision_2030``, ``company_profile``, ``past_projects``,
+      ``methodology``, ``team``, ``timeline``, ``quality_and_risk``,
+      ``pricing``
+    """
+    # 1. Sanitize & validate inputs
+    clean_project_id = sanitize_project_id(project_id)
+    section_key = section_type.strip().lower()
+
+    if section_key not in SECTIONS_CONFIG:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": f"Unknown section type: '{section_type}'.",
+                "valid_sections": list(SECTIONS_CONFIG.keys()),
+            },
+        )
+
+    # 2. Verify the project has been initialized (shared_memory.json exists)
+    project_dir = _STORAGE_ROOT / f"project_{clean_project_id}"
+    try:
+        shared_memory = load_shared_memory(project_dir)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": f"Project '{clean_project_id}' has not been initialized.",
+                "hint": "Call POST /proposals/initialize/{project_id} first.",
+            },
+        )
+
+    # 3. Build the LangGraph state from the persisted shared memory
+    #    The tender_text and company_assets_text were extracted during
+    #    initialization — we need to reload them from the context_initializer
+    #    output. Since we're file-based, we re-run the text extraction
+    #    by invoking the context_initializer in read-only mode, or we
+    #    store the extracted texts. For efficiency, we store them in
+    #    shared_memory during initialization.
+    #
+    #    CURRENT APPROACH: Re-extract from the Assets folder to keep
+    #    shared_memory.json focused on section content only.
+    from nodes.context_initializer import context_initializer_node as _init_node
+
+    # Re-run the initializer to get fresh extracted text
+    # (it's idempotent — it just re-reads files and re-creates shared_memory)
+    init_state: ProposalState = {"project_id": clean_project_id}
+    init_result = _init_node(init_state)
+
+    if "error" in init_result:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reload project context: {init_result['error']}",
+        )
+
+    # 4. Construct the writer node state
+    writer_state: ProposalState = {
+        "project_id": clean_project_id,
+        "current_section": section_key,
+        "tender_text": init_result.get("tender_text", ""),
+        "company_assets_text": init_result.get("company_assets_text", ""),
+        "bid_details_text": init_result.get("bid_details_text", ""),
+        "additional_assets_text": init_result.get("additional_assets_text", ""),
+        "shared_memory_path": init_result.get("shared_memory_path", ""),
+        "sections": init_result.get("sections", {}),
+    }
+
+    # 5. Invoke the Universal_Writer_Node
+    writer_result = universal_writer_node(writer_state)
+
+    if "error" in writer_result:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "message": f"Section generation failed for '{section_key}'.",
+                "error": writer_result["error"],
+            },
+        )
+
+    # 6. Return the generated content
+    return {
+        "status": "success",
+        "project_id": clean_project_id,
+        "section_type": section_key,
+        "section_config_type": SECTIONS_CONFIG[section_key]["type"],
+        "generated_markdown": writer_result.get("output_markdown", ""),
+        "input_tokens": writer_result.get("input_tokens", 0),
+        "output_tokens": writer_result.get("output_tokens", 0),
+        "sections_progress": {
+            key: {
+                "status": val.get("status", "EMPTY"),
+                "has_content": bool(val.get("content", "").strip()),
+            }
+            for key, val in writer_result.get("sections", {}).items()
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Endpoint: Get Sections Status / Content
+# ---------------------------------------------------------------------------
+
+@router.get("/sections/{project_id}", status_code=status.HTTP_200_OK)
+async def get_all_sections(project_id: str):
+    """
+    Retrieve the status and content summary of all 11 sections for a project.
+
+    Returns each section's status (EMPTY/DRAFT/REVIEW/FINAL) and whether
+    it has generated content.
+    """
+    clean_project_id = sanitize_project_id(project_id)
+    project_dir = _STORAGE_ROOT / f"project_{clean_project_id}"
+
+    try:
+        shared_memory = load_shared_memory(project_dir)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": f"Project '{clean_project_id}' has not been initialized.",
+                "hint": "Call POST /proposals/initialize/{project_id} first.",
+            },
+        )
+
+    sections = shared_memory.get("sections", {})
+
+    return {
+        "status": "success",
+        "project_id": clean_project_id,
+        "metadata": shared_memory.get("metadata", {}),
+        "sections": {
+            key: {
+                "status": val.get("status", "EMPTY"),
+                "has_content": bool(val.get("content", "").strip()),
+                "content_length": len(val.get("content", "")),
+            }
+            for key, val in sections.items()
+        },
+    }
+
+
+@router.get("/sections/{project_id}/{section_type}", status_code=status.HTTP_200_OK)
+async def get_section_content(project_id: str, section_type: str):
+    """
+    Retrieve the full generated content for a specific section.
+
+    Returns the Markdown content and status of the requested section.
+    """
+    clean_project_id = sanitize_project_id(project_id)
+    section_key = section_type.strip().lower()
+
+    if section_key not in PROPOSAL_SECTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": f"Unknown section type: '{section_type}'.",
+                "valid_sections": PROPOSAL_SECTIONS,
+            },
+        )
+
+    project_dir = _STORAGE_ROOT / f"project_{clean_project_id}"
+
+    try:
+        shared_memory = load_shared_memory(project_dir)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": f"Project '{clean_project_id}' has not been initialized.",
+                "hint": "Call POST /proposals/initialize/{project_id} first.",
+            },
+        )
+
+    sections = shared_memory.get("sections", {})
+    section_data = sections.get(section_key, {"content": "", "status": "EMPTY"})
+
+    return {
+        "status": "success",
+        "project_id": clean_project_id,
+        "section_type": section_key,
+        "section_status": section_data.get("status", "EMPTY"),
+        "content": section_data.get("content", ""),
+        "content_length": len(section_data.get("content", "")),
+    }
+

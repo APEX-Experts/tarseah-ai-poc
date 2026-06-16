@@ -60,6 +60,7 @@ from models.proposal_state import ProposalState
 from helpers.text_extraction import extract_text, find_file_by_role
 from helpers.shared_memory import (
     initialize_shared_memory,
+    load_shared_memory,
     build_default_sections,
 )
 
@@ -113,15 +114,15 @@ def _discover_input_files(project_id: str) -> Dict[str, Path]:
     discovered: Dict[str, Path] = {}
 
     # --- Tender RFP ---
-    tender_keywords = ["tender", "rfp"]
+    tender_keywords = ["tender", "rfp", "كراسة", "شروط", "مواصفات"]
     for keyword in tender_keywords:
-        match = find_file_by_role(assets_dir, keyword, [".pdf"])
+        match = find_file_by_role(assets_dir, keyword, [".pdf", ".docx", ".doc"])
         if match:
             discovered["tender"] = match
             break
 
     # --- Company Profile / Past Experience ---
-    company_keywords = ["company", "profile", "experience"]
+    company_keywords = ["company", "profile", "experience", "شركة", "ملف", "خبرة", "سوابق"]
     for keyword in company_keywords:
         match = find_file_by_role(assets_dir, keyword, [".pdf", ".docx", ".doc"])
         if match:
@@ -129,9 +130,9 @@ def _discover_input_files(project_id: str) -> Dict[str, Path]:
             break
 
     # --- Bid Details ---
-    bid_keywords = ["bid", "details"]
+    bid_keywords = ["bid", "details", "عرض", "تفاصيل"]
     for keyword in bid_keywords:
-        match = find_file_by_role(assets_dir, keyword, [".md", ".txt"])
+        match = find_file_by_role(assets_dir, keyword, [".md", ".txt", ".pdf", ".docx"])
         if match:
             discovered["bid"] = match
             break
@@ -141,12 +142,10 @@ def _discover_input_files(project_id: str) -> Dict[str, Path]:
         if role in discovered:
             logger.info("Discovered %s file: %s", role, discovered[role].name)
         else:
-            logger.warning(
-                "No %s file found in '%s'. "
-                "Expected a file with '%s' in its name.",
+            logger.info(
+                "No %s file found in '%s'.",
                 role,
                 assets_dir,
-                role,
             )
 
     return discovered
@@ -207,16 +206,24 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     # Step 2: Discover & Extract Text from Input Files
     # ------------------------------------------------------------------
+    # Step 2: Discover & Extract Text from Input Files
+    # ------------------------------------------------------------------
+    assets_dir = _ASSETS_ROOT / project_id
     discovered_files = _discover_input_files(project_id)
 
     tender_text = ""
     company_assets_text = ""
     bid_details_text = ""
+    additional_parts: list[str] = []
+
+    # Map primary paths to skip them when collecting additional assets
+    primary_paths = set(discovered_files.values())
 
     # --- Extract Tender RFP ---
     if "tender" in discovered_files:
         try:
-            tender_text = extract_text(discovered_files["tender"])
+            raw_tender = extract_text(discovered_files["tender"])
+            tender_text = f"=== اسم الملف: {discovered_files['tender'].name} ===\n{raw_tender}"
             logger.info(
                 "Tender text extracted: %d characters from '%s'.",
                 len(tender_text),
@@ -226,12 +233,13 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
             logger.error("Failed to extract tender text: %s", exc)
             tender_text = f"[EXTRACTION ERROR] {exc}"
     else:
-        logger.warning("Tender RFP file not found — tender_text will be empty.")
+        logger.info("Tender RFP file not found — tender_text will be empty.")
 
     # --- Extract Company Profile / Past Experience ---
     if "company" in discovered_files:
         try:
-            company_assets_text = extract_text(discovered_files["company"])
+            raw_company = extract_text(discovered_files["company"])
+            company_assets_text = f"=== اسم الملف: {discovered_files['company'].name} ===\n{raw_company}"
             logger.info(
                 "Company assets text extracted: %d characters from '%s'.",
                 len(company_assets_text),
@@ -241,14 +249,15 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
             logger.error("Failed to extract company assets text: %s", exc)
             company_assets_text = f"[EXTRACTION ERROR] {exc}"
     else:
-        logger.warning(
+        logger.info(
             "Company profile file not found — company_assets_text will be empty."
         )
 
     # --- Extract Bid Details ---
     if "bid" in discovered_files:
         try:
-            bid_details_text = extract_text(discovered_files["bid"])
+            raw_bid = extract_text(discovered_files["bid"])
+            bid_details_text = f"=== اسم الملف: {discovered_files['bid'].name} ===\n{raw_bid}"
             logger.info(
                 "Bid details text extracted: %d characters from '%s'.",
                 len(bid_details_text),
@@ -258,20 +267,41 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
             logger.error("Failed to extract bid details text: %s", exc)
             bid_details_text = f"[EXTRACTION ERROR] {exc}"
     else:
-        logger.warning(
+        logger.info(
             "Bid details file not found — bid_details_text will be empty."
         )
 
-    # ------------------------------------------------------------------
-    # Step 3: Initialize shared_memory.json
-    # ------------------------------------------------------------------
-    # Creates the persistent JSON file with the 11-section skeleton.
-    # This file will be read/written by all downstream nodes.
-    shared_memory_path = initialize_shared_memory(project_dir)
+    # --- Extract All Other Files (Additional Assets) ---
+    if assets_dir.exists():
+        for child in assets_dir.iterdir():
+            if child.is_file() and child not in primary_paths:
+                try:
+                    text = extract_text(child)
+                    if text.strip():
+                        additional_parts.append(
+                            f"=== اسم الملف: {child.name} ===\n{text}"
+                        )
+                except ValueError:
+                    # Ignore unsupported file types like images gracefully
+                    logger.info("Skipping text extraction for unsupported file type: %s", child.name)
+                except Exception as exc:
+                    logger.error("Failed to extract text from additional file '%s': %s", child.name, exc)
+                    additional_parts.append(
+                        f"=== اسم الملف: {child.name} ===\n[خطأ في استخراج النص: {exc}]"
+                    )
+
+    additional_assets_text = "\n\n".join(additional_parts)
+
+    force_reset = state.get("force_reset", False)
+    shared_memory_path = initialize_shared_memory(project_dir, force_reset=force_reset)
     logger.info("Shared memory initialized at: %s", shared_memory_path)
 
-    # Also build an in-memory copy for the runtime state
-    sections = build_default_sections()
+    # Load the actual (potentially merged/preserved) sections from the file
+    try:
+        shared_memory = load_shared_memory(project_dir)
+        sections = shared_memory.get("sections", {})
+    except Exception:
+        sections = build_default_sections()
 
     # ------------------------------------------------------------------
     # Step 4: Return State Update
@@ -281,6 +311,7 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
         "tender_text": tender_text,
         "company_assets_text": company_assets_text,
         "bid_details_text": bid_details_text,
+        "additional_assets_text": additional_assets_text,
         "shared_memory_path": str(shared_memory_path),
         "sections": sections,
     }
@@ -288,10 +319,11 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
     logger.info("=" * 60)
     logger.info("Context_Initializer_Node — COMPLETE")
     logger.info(
-        "  Tender text:   %d chars | Company text: %d chars | Bid text: %d chars",
+        "  Tender: %d chars | Company: %d chars | Bid: %d chars | Additional: %d chars",
         len(tender_text),
         len(company_assets_text),
         len(bid_details_text),
+        len(additional_assets_text),
     )
     logger.info("  Sections initialized: %d", len(sections))
     logger.info("  Shared memory: %s", shared_memory_path)

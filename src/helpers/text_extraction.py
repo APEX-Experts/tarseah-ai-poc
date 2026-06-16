@@ -189,6 +189,8 @@ _EXTRACTOR_MAP = {
     ".md": extract_text_from_text_file,
     ".txt": extract_text_from_text_file,
     ".markdown": extract_text_from_text_file,
+    ".json": extract_text_from_text_file,
+    ".csv": extract_text_from_text_file,
 }
 
 

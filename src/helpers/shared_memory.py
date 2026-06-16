@@ -71,15 +71,18 @@ def build_default_sections() -> Dict[str, Dict[str, str]]:
     }
 
 
-def initialize_shared_memory(project_dir: Path) -> Path:
+def initialize_shared_memory(project_dir: Path, force_reset: bool = False) -> Path:
     """
-    Create (or overwrite) the ``shared_memory.json`` file inside the given
+    Create (or initialize) the ``shared_memory.json`` file inside the given
     project directory with the default 11-section skeleton.
 
     Parameters
     ----------
     project_dir : Path
         The project directory (e.g. ``storage/project_abc123/``).
+    force_reset : bool, optional
+        If True, clears any existing section content/status.
+        If False (default), preserves any previously generated section data.
 
     Returns
     -------
@@ -91,13 +94,34 @@ def initialize_shared_memory(project_dir: Path) -> Path:
 
     memory_path = project_dir / SHARED_MEMORY_FILENAME
 
+    # Start with the default 11-section empty skeleton
+    sections = build_default_sections()
+
+    # If the file already exists and we are not forcing a reset, try to merge
+    if memory_path.exists() and not force_reset:
+        try:
+            existing_data = _read_json(memory_path)
+            existing_sections = existing_data.get("sections", {})
+            for sec_key, sec_val in existing_sections.items():
+                if sec_key in sections:
+                    # Preserve section content and status if it exists
+                    if sec_val.get("content") or sec_val.get("status") != "EMPTY":
+                        sections[sec_key] = sec_val
+            logger.info("Preserved existing sections from shared memory.")
+        except Exception as e:
+            logger.warning("Failed to read existing shared memory file: %s. Re-initializing.", e)
+
+    completed = sum(
+        1 for s in sections.values() if s.get("status") != "EMPTY"
+    )
+
     payload: Dict[str, Any] = {
         "project_id": project_dir.name,
-        "sections": build_default_sections(),
+        "sections": sections,
         "metadata": {
             "version": "1.0",
             "total_sections": len(PROPOSAL_SECTIONS),
-            "completed_sections": 0,
+            "completed_sections": completed,
         },
     }
 

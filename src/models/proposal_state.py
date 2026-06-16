@@ -61,4 +61,9 @@ class ProposalState(TypedDict, total=False):
     shared_memory_path: str
     sections: Dict[str, SectionEntry]
     current_section: Optional[str]
+    output_markdown: Optional[str]
     error: Optional[str]
+    force_reset: bool
+    additional_assets_text: str
+    input_tokens: Optional[int]
+    output_tokens: Optional[int]
