@@ -267,7 +267,7 @@ def filter_relevant_context(section_key: str, text: str, max_chars: int = 15000)
 # Compiled Memory Builder
 # ---------------------------------------------------------------------------
 
-def _compile_shared_memory(sections: Dict[str, Dict[str, str]]) -> str:
+def _compile_shared_memory(sections: Dict[str, Dict[str, str]], exclude_section: str | None = None) -> str:
     """
     Scan all sections in shared_memory and compile non-empty ones into a
     single text block that Gemini can reference for cross-section consistency.
@@ -277,6 +277,8 @@ def _compile_shared_memory(sections: Dict[str, Dict[str, str]]) -> str:
     sections : dict
         The ``sections`` dict from shared_memory.json.
         Each key maps to ``{"content": "...", "status": "..."}``.
+    exclude_section : str, optional
+        The section key to exclude from the compiled memory block (e.g. the current section being drafted).
 
     Returns
     -------
@@ -287,6 +289,8 @@ def _compile_shared_memory(sections: Dict[str, Dict[str, str]]) -> str:
     memory_parts: list[str] = []
 
     for section_key in PROPOSAL_SECTIONS:
+        if exclude_section and section_key == exclude_section:
+            continue
         entry = sections.get(section_key, {})
         content = entry.get("content", "").strip()
 
@@ -367,6 +371,7 @@ def _build_user_prompt(
         "- **اللغة والترجمة**: يجب أن تكون لغة المخرجات بالكامل هي اللغة العربية الفصحى المهنية الراقية حصرياً.\n"
         "- **الجداول والعناوين**: يجب ترجمة جميع العناوين الرئيسية والفرعية، وأسماء الأعمدة في الجداول، والمدخلات إلى اللغة العربية بالكامل. يمنع منعاً باتاً ترك عناوين الجداول بالإنجليزية.\n"
         "- **التواريخ والمدد**: اكتب جميع التواريخ والمدد الزمنية باللغة العربية حصراً (مثل: 'يناير 2027'، 'مدة 4 أسابيع'، 'سنة واحدة') ولا تستخدم التواريخ بالصيغة الإنجليزية.\n"
+        "- **التواريخ والتقويم**: يجب استخدام التقويم الميلادي فقط (Gregorian Calendar Only) في كامل القسم والمستند. يمنع منعاً باتاً خلط التواريخ الهجرية والميلادية في نفس القسم أو الجدول (مثال: لا تكتب '1 أكتوبر' متبوعاً بسنة هجرية). يجب أن تكون جميع المدد والمعالم وبوابات المراحل منطقية زمنياً ومتسقة رياضياً.\n"
         "- **المصطلحات الفنية**: قم بتعريب المصطلحات والمنهجيات الفنية (مثل Agile, Scrum, Gantt, KPIs, Milestones, Stage Gate) وكتابتها باللغة العربية، مع إمكانية ذكر المصطلح الإنجليزي الأصلي بين قوسين فقط عند الضرورة القصوى (مثل: 'منهجية أجايل (Agile)'، 'مؤشرات الأداء الرئيسية (KPIs)'، 'بوابة المرحلة (Stage Gate)').\n"
         "- **التنسيق**: استخدم تنسيق Markdown نظيف ومنظم (عناوين، قوائم، جداول حيثما يناسب).\n"
         "- **ممنوع**: لا تكتب أي مقدمة محادثية أو خاتمة اجتماعية (مثل: 'بالتأكيد'، 'إليك'، 'أتمنى أن يكون مفيداً').\n"
@@ -469,8 +474,8 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
         logger.error(error_msg)
         return {"error": error_msg}
 
-    # Compile all non-empty sections into a text block for Gemini context
-    compiled_memory = _compile_shared_memory(sections)
+    # Compile all non-empty sections into a text block for Gemini context, excluding the current section
+    compiled_memory = _compile_shared_memory(sections, exclude_section=current_section)
     if compiled_memory:
         logger.info(
             "Compiled memory from %d previous section(s) (%d chars).",
@@ -502,7 +507,22 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     combined_docs_text = "\n\n".join(doc for doc in all_docs if doc.strip())
 
     # Filter the consolidated text block to only include relevant chunks
-    filtered_docs = filter_relevant_context(current_section, combined_docs_text)
+    # Filter the consolidated text block to only include relevant chunks
+    if current_section == "company_profile":
+        # For company profile, use ONLY the company assets text in the input context
+        # to ensure the agent gets real data from these files only.
+        filtered_docs = company_assets_text
+    elif current_section == "past_projects":
+        # For past projects, combine the company assets (source of projects) and the tender text
+        # (competition RFP details) to allow mapping relevance without hallucination.
+        filtered_docs = (
+            "=== ملف تعريف الشركة وسوابق الأعمال الحقيقية (المصدر الوحيد لاستخراج المشاريع السابقة) ===\n"
+            f"{company_assets_text}\n\n"
+            "=== كراسة الشروط والمواصفات للمشروع الحالي (مستندات المنافسة - لتحديد مواءمة سوابق الأعمال فقط) ===\n"
+            f"{tender_text}"
+        )
+    else:
+        filtered_docs = filter_relevant_context(current_section, combined_docs_text)
 
     logger.info("Context Filtering Stats for section '%s':", current_section)
     logger.info("  Combined Project Documents: %d -> %d chars", len(combined_docs_text), len(filtered_docs))
@@ -514,6 +534,53 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     )
 
     logger.info("User prompt constructed: %d chars total.", len(user_prompt))
+
+    # Pre-check for team information
+    if current_section == "team":
+        import re
+        import unicodedata
+        normalized_docs = unicodedata.normalize("NFKC", combined_docs_text).lower()
+        
+        # English patterns with word boundaries
+        eng_patterns = [
+            r"\bteam\b", r"\broles?\b", r"\bpersonnel\b", r"\bstaff\b", r"\bcvs?\b", 
+            r"\bresumes?\b", r"\borganogram\b", r"\bstructure\b", r"\bhierarchy\b", 
+            r"\bproject manager\b", r"\bqa officer\b", r"\btechnical consultant\b"
+        ]
+        # Arabic keywords
+        ara_keywords = [
+            "فريق", "الهيكل التنظيمي", "الهيكل الإداري", "أدوار", "مسؤوليات", 
+            "الكوادر", "السير الذاتية", "السيرة الذاتية", "مدير المشروع", "استشاري",
+            "مهندس", "مطور", "محلل", "أعضاء"
+        ]
+        
+        has_eng = any(re.search(pat, normalized_docs) for pat in eng_patterns)
+        has_ara = any(kw in normalized_docs for kw in ara_keywords)
+        has_team_info = has_eng or has_ara
+        
+        if not has_team_info:
+            logger.info("Programmatic check: No team info found in documents. Enforcing guardrail.")
+            generated_markdown = "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+            
+            try:
+                update_section(
+                    project_dir=project_dir,
+                    section_key=current_section,
+                    content=generated_markdown,
+                    status="DRAFT",
+                )
+            except Exception as exc:
+                logger.error("Failed to persist section '%s': %s", current_section, exc)
+                
+            updated_memory = load_shared_memory(project_dir)
+            updated_sections = updated_memory.get("sections", {})
+            return {
+                "output_markdown": generated_markdown,
+                "sections": updated_sections,
+                "current_section": current_section,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
 
     # ------------------------------------------------------------------
     # Step 5: Call Groq Model
@@ -544,6 +611,17 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
             generated_markdown = "".join(parts).strip()
         else:
             generated_markdown = str(raw_content or "").strip()
+
+        # Post-process for team
+        if current_section == "team":
+            normalized_gen = generated_markdown.lower()
+            if (
+                "no available information regarding the project team" in normalized_gen
+                or "لا تتوفر معلومات" in generated_markdown
+                or "لا توجد معلومات" in generated_markdown
+                or "لا يوجد معلومات" in generated_markdown
+            ):
+                generated_markdown = "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
 
         logger.info(
             "Groq response received: %d chars for section '%s'.",
@@ -625,3 +703,308 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     logger.info("═" * 60)
 
     return state_update
+
+
+# ---------------------------------------------------------------------------
+# Streaming Generator (for SSE endpoint)
+# ---------------------------------------------------------------------------
+
+async def universal_writer_stream(state: ProposalState):
+    """
+    Async generator that streams LLM output as Server-Sent Events.
+
+    Reuses the same prompt-building and context-filtering logic as
+    ``universal_writer_node`` but calls ``llm.stream()`` instead of
+    ``llm.invoke()``, yielding each token chunk as it arrives.
+
+    After streaming completes, the full content is persisted to
+    ``shared_memory.json`` and a final ``[DONE]`` event is emitted
+    with token usage metadata.
+
+    Yields
+    ------
+    str
+        SSE-formatted lines (``data: ...\\n\\n``).
+    """
+    import json as _json
+
+    # ------------------------------------------------------------------
+    # Steps 1-4: Identical setup to universal_writer_node
+    # ------------------------------------------------------------------
+    project_id_val = state.get("project_id")
+    project_id = project_id_val.strip() if isinstance(project_id_val, str) else ""
+
+    current_section_val = state.get("current_section")
+    current_section = current_section_val.strip() if isinstance(current_section_val, str) else ""
+
+    tender_text = state.get("tender_text", "")
+    company_assets_text = state.get("company_assets_text", "")
+    bid_details_text = state.get("bid_details_text", "")
+    additional_assets_text = state.get("additional_assets_text", "")
+
+    if not project_id:
+        yield f"data: {_json.dumps({'error': 'project_id is required'})}\n\n"
+        return
+
+    if not current_section:
+        yield f"data: {_json.dumps({'error': 'current_section is required'})}\n\n"
+        return
+
+    if current_section not in SECTIONS_CONFIG:
+        yield f"data: {_json.dumps({'error': f'Unknown section: {current_section}', 'valid_sections': list(SECTIONS_CONFIG.keys())})}\n\n"
+        return
+
+    logger.info("═" * 60)
+    logger.info("Universal_Writer_Node [STREAM] — START")
+    logger.info("  Project: %s | Section: %s", project_id, current_section)
+    logger.info("═" * 60)
+
+    # Load shared memory
+    project_dir = _STORAGE_ROOT / f"project_{project_id}"
+    try:
+        shared_memory = load_shared_memory(project_dir)
+        sections = shared_memory.get("sections", {})
+    except FileNotFoundError as exc:
+        yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
+        return
+
+    compiled_memory = _compile_shared_memory(sections, exclude_section=current_section)
+
+    # Section config
+    section_config = get_section_config(current_section)
+    system_prompt = section_config["system_prompt"]
+
+    # Build prompt (same logic as non-streaming)
+    all_docs = [tender_text, company_assets_text, bid_details_text, additional_assets_text]
+    combined_docs_text = "\n\n".join(doc for doc in all_docs if doc.strip())
+    if current_section == "company_profile":
+        # For company profile, use ONLY the company assets text in the input context
+        # to ensure the agent gets real data from these files only.
+        filtered_docs = company_assets_text
+    elif current_section == "past_projects":
+        # For past projects, combine the company assets (source of projects) and the tender text
+        # (competition RFP details) to allow mapping relevance without hallucination.
+        filtered_docs = (
+            "=== ملف تعريف الشركة وسوابق الأعمال الحقيقية (المصدر الوحيد لاستخراج المشاريع السابقة) ===\n"
+            f"{company_assets_text}\n\n"
+            "=== كراسة الشروط والمواصفات للمشروع الحالي (مستندات المنافسة - لتحديد مواءمة سوابق الأعمال فقط) ===\n"
+            f"{tender_text}"
+        )
+    else:
+        filtered_docs = filter_relevant_context(current_section, combined_docs_text)
+
+    user_prompt = _build_user_prompt(
+        section_key=current_section,
+        project_documents_text=filtered_docs,
+        compiled_memory=compiled_memory,
+    )
+
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt),
+    ]
+
+    # Pre-check for team information
+    if current_section == "team":
+        import re
+        import unicodedata
+        normalized_docs = unicodedata.normalize("NFKC", combined_docs_text).lower()
+        
+        # English patterns with word boundaries
+        eng_patterns = [
+            r"\bteam\b", r"\broles?\b", r"\bpersonnel\b", r"\bstaff\b", r"\bcvs?\b", 
+            r"\bresumes?\b", r"\borganogram\b", r"\bstructure\b", r"\bhierarchy\b", 
+            r"\bproject manager\b", r"\bqa officer\b", r"\btechnical consultant\b"
+        ]
+        # Arabic keywords
+        ara_keywords = [
+            "فريق", "الهيكل التنظيمي", "الهيكل الإداري", "أدوار", "مسؤوليات", 
+            "الكوادر", "السير الذاتية", "السيرة الذاتية", "مدير المشروع", "استشاري",
+            "مهندس", "مطور", "محلل", "أعضاء"
+        ]
+        
+        has_eng = any(re.search(pat, normalized_docs) for pat in eng_patterns)
+        has_ara = any(kw in normalized_docs for kw in ara_keywords)
+        has_team_info = has_eng or has_ara
+        
+        if not has_team_info:
+            logger.info("Programmatic check [STREAM]: No team info found in documents. Enforcing guardrail.")
+            generated_markdown = "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+            
+            try:
+                update_section(
+                    project_dir=project_dir,
+                    section_key=current_section,
+                    content=generated_markdown,
+                    status="DRAFT",
+                )
+            except Exception as exc:
+                logger.error("Failed to persist section '%s': %s", current_section, exc)
+                
+            yield f"data: {_json.dumps({'chunk': generated_markdown}, ensure_ascii=False)}\n\n"
+            
+            try:
+                updated_memory = load_shared_memory(project_dir)
+                updated_sections = updated_memory.get("sections", {})
+            except Exception:
+                updated_sections = {}
+                
+            done_payload = {
+                "done": True,
+                "section_type": current_section,
+                "section_config_type": section_config["type"],
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "content_length": len(generated_markdown),
+                "sections_progress": {
+                    key: {
+                        "status": val.get("status", "EMPTY"),
+                        "has_content": bool(val.get("content", "").strip()),
+                    }
+                    for key, val in updated_sections.items()
+                },
+            }
+            yield f"data: {_json.dumps(done_payload, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+    # ------------------------------------------------------------------
+    # Step 5: Stream from Groq
+    # ------------------------------------------------------------------
+    full_content_parts: list[str] = []
+    input_tokens = 0
+    output_tokens = 0
+    text_buffer = ""
+
+    try:
+        llm = _get_llm()
+        logger.info("Streaming Groq for section '%s'...", current_section)
+
+        async for chunk in llm.astream(messages):
+            # Extract text content from the streamed AIMessageChunk
+            token_text = ""
+            if isinstance(chunk.content, str):
+                token_text = chunk.content
+            elif isinstance(chunk.content, list):
+                for part in chunk.content:
+                    if isinstance(part, str):
+                        token_text += part
+                    elif isinstance(part, dict) and "text" in part:
+                        token_text += str(part["text"])
+
+            if token_text:
+                full_content_parts.append(token_text)
+                text_buffer += token_text
+
+                # Find the last word or sentence boundary character
+                last_sep_idx = -1
+                for i in range(len(text_buffer) - 1, -1, -1):
+                    # Separate on whitespace or common punctuation
+                    if text_buffer[i] in (' ', '\n', '\r', '\t', '،', '.', '!', '؟', ':', ';', '-'):
+                        last_sep_idx = i
+                        break
+
+                # Yield if we found a boundary, or if the buffer is getting too long
+                if last_sep_idx != -1:
+                    to_yield = text_buffer[:last_sep_idx + 1]
+                    text_buffer = text_buffer[last_sep_idx + 1:]
+                    yield f"data: {_json.dumps({'chunk': to_yield})}\n\n"
+                elif len(text_buffer) > 45:
+                    yield f"data: {_json.dumps({'chunk': text_buffer})}\n\n"
+                    text_buffer = ""
+
+            # Try to extract token usage from the last chunk's metadata
+            usage_metadata = getattr(chunk, "usage_metadata", None)
+            if usage_metadata:
+                input_tokens = usage_metadata.get("input_tokens", input_tokens)
+                output_tokens = usage_metadata.get("output_tokens", output_tokens)
+            elif hasattr(chunk, "response_metadata") and chunk.response_metadata:
+                token_usage = chunk.response_metadata.get("token_usage", {})
+                if token_usage:
+                    input_tokens = token_usage.get("prompt_tokens", input_tokens)
+                    output_tokens = token_usage.get("completion_tokens", output_tokens)
+
+        # Flush any remaining text in the buffer
+        if text_buffer:
+            yield f"data: {_json.dumps({'chunk': text_buffer})}\n\n"
+
+    except Exception as exc:
+        error_msg = f"Groq streaming failed for section '{current_section}': {exc}"
+        logger.error(error_msg, exc_info=True)
+        yield f"data: {_json.dumps({'error': error_msg})}\n\n"
+        return
+
+    finally:
+        # ------------------------------------------------------------------
+        # Step 6: Persist the full generated content
+        # ------------------------------------------------------------------
+        generated_markdown = "".join(full_content_parts).strip()
+        if current_section == "team" and generated_markdown:
+            normalized_gen = generated_markdown.lower()
+            if (
+                "no available information regarding the project team" in normalized_gen
+                or "لا تتوفر معلومات" in generated_markdown
+                or "لا توجد معلومات" in generated_markdown
+                or "لا يوجد معلومات" in generated_markdown
+            ):
+                generated_markdown = "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+
+        if generated_markdown:
+            logger.info(
+                "Persisting generated stream content of %d chars for section '%s' to shared_memory.json",
+                len(generated_markdown),
+                current_section,
+            )
+            try:
+                update_section(
+                    project_dir=project_dir,
+                    section_key=current_section,
+                    content=generated_markdown,
+                    status="DRAFT",
+                )
+                logger.info(
+                    "Section '%s' persisted to shared_memory.json with status='DRAFT'.",
+                    current_section,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to persist section '%s': %s", current_section, exc, exc_info=True
+                )
+
+    # Reload to get fresh progress
+    try:
+        updated_memory = load_shared_memory(project_dir)
+        updated_sections = updated_memory.get("sections", {})
+    except Exception:
+        updated_sections = {}
+
+    completed_count = sum(
+        1 for s in updated_sections.values() if s.get("content", "").strip()
+    )
+
+    logger.info("═" * 60)
+    logger.info("Universal_Writer_Node [STREAM] — COMPLETE")
+    logger.info("  Section: %s | Output: %d chars", current_section, len(generated_markdown))
+    logger.info("  Progress: %d/%d sections drafted", completed_count, len(PROPOSAL_SECTIONS))
+    logger.info("═" * 60)
+
+    # ------------------------------------------------------------------
+    # Step 7: Yield final [DONE] event with metadata
+    # ------------------------------------------------------------------
+    done_payload = {
+        "done": True,
+        "section_type": current_section,
+        "section_config_type": section_config["type"],
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "content_length": len(generated_markdown),
+        "sections_progress": {
+            key: {
+                "status": val.get("status", "EMPTY"),
+                "has_content": bool(val.get("content", "").strip()),
+            }
+            for key, val in updated_sections.items()
+        },
+    }
+    yield f"data: {_json.dumps(done_payload, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"

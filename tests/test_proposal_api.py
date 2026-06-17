@@ -250,5 +250,90 @@ def test_generate_section_includes_all_assets_as_context(monkeypatch):
     assert "مستندات ومعلومات المشروع" in user_prompt
 
 
+def test_generate_section_stream_endpoint_success(monkeypatch):
+    from unittest.mock import MagicMock
+    from langchain_core.messages import AIMessageChunk
+    
+    async def mock_astream(*args, **kwargs):
+        chunks = ["هذا ", "هو ", "محتوى ", "مقدمة ", "العرض."]
+        for i, c in enumerate(chunks):
+            if i == len(chunks) - 1:
+                yield AIMessageChunk(content=c, usage_metadata={"input_tokens": 80, "output_tokens": 40, "total_tokens": 120})
+            else:
+                yield AIMessageChunk(content=c)
+                
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.astream = mock_astream
+    
+    import nodes.universal_writer
+    monkeypatch.setattr(nodes.universal_writer, "_llm", mock_llm_instance)
+    
+    client = TestClient(app)
+    
+    # 1. Initialize first
+    files = [
+        ("file", ("tender_rfp.pdf", io.BytesIO(b"Dummy tender content"), "application/pdf")),
+        ("file", ("company_profile.docx", io.BytesIO(b"Dummy company content"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")),
+        ("file", ("bid_details.md", io.BytesIO(b"# Bid Details"), "text/markdown")),
+    ]
+    init_resp = client.post(f"/proposals/initialize/{TEST_PROJECT_ID}", files=files)
+    assert init_resp.status_code == 200
+    
+    # 2. Call stream endpoint
+    response = client.post(f"/proposals/generate/{TEST_PROJECT_ID}/cover_letter/stream")
+    assert response.status_code == 200
+    assert "data: " in response.text
+    
+    # 3. Check memory file contents
+    import json
+    mem_file = STORAGE_DIR / "shared_memory.json"
+    assert mem_file.exists()
+    mem_data = json.loads(mem_file.read_text())
+    assert mem_data["sections"]["cover_letter"]["content"] == "هذا هو محتوى مقدمة العرض."
+    assert mem_data["sections"]["cover_letter"]["status"] == "DRAFT"
+
+
+def test_regenerate_section_excludes_self_from_context(monkeypatch):
+    from unittest.mock import MagicMock
+    from langchain_core.messages import AIMessage
+    
+    mock_llm_instance = MagicMock()
+    mock_llm_instance.invoke.side_effect = [
+        AIMessage(content="النسخة الأولى من خطاب التقديم."),
+        AIMessage(content="النسخة الثانية من خطاب التقديم.")
+    ]
+    
+    import nodes.universal_writer
+    monkeypatch.setattr(nodes.universal_writer, "_llm", mock_llm_instance)
+    
+    client = TestClient(app)
+    
+    # 1. Initialize
+    files = [
+        ("file", ("tender_rfp.pdf", io.BytesIO(b"Dummy tender content"), "application/pdf")),
+        ("file", ("company_profile.docx", io.BytesIO(b"Dummy company content"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")),
+        ("file", ("bid_details.md", io.BytesIO(b"# Bid Details"), "text/markdown")),
+    ]
+    init_resp = client.post(f"/proposals/initialize/{TEST_PROJECT_ID}", files=files)
+    assert init_resp.status_code == 200
+    
+    # 2. Generate first time
+    resp1 = client.post(f"/proposals/generate/{TEST_PROJECT_ID}/cover_letter")
+    assert resp1.status_code == 200
+    
+    # 3. Generate second time (regenerate)
+    resp2 = client.post(f"/proposals/generate/{TEST_PROJECT_ID}/cover_letter")
+    assert resp2.status_code == 200
+    
+    # 4. Verify that in the second call, "النسخة الأولى" is NOT in the user prompt!
+    assert mock_llm_instance.invoke.call_count == 2
+    second_call_args = mock_llm_instance.invoke.call_args_list[1]
+    messages = second_call_args[0][0]
+    user_prompt = next(msg.content for msg in messages if msg.__class__.__name__ == "HumanMessage")
+    
+    assert "النسخة الأولى" not in user_prompt
+
+
+
 
 

@@ -259,11 +259,18 @@ def find_file_by_role(
         preferred_extensions = [".pdf", ".docx", ".doc", ".md", ".txt"]
 
     directory = Path(directory)
+    if not directory.exists():
+        return None
+
     candidates: list[Path] = []
 
-    for child in directory.iterdir():
-        if child.is_file() and role.lower() in child.stem.lower():
-            candidates.append(child)
+    for child in directory.rglob("*"):
+        if child.is_file():
+            # Check if role matches either the filename or any parent folder name up to the search directory
+            relative_path = child.relative_to(directory)
+            path_parts = relative_path.parts
+            if any(role.lower() in part.lower() for part in path_parts):
+                candidates.append(child)
 
     if not candidates:
         return None

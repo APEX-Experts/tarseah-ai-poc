@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from helpers.config import settings
@@ -43,7 +44,7 @@ from helpers.shared_memory import load_shared_memory, PROPOSAL_SECTIONS
 from models.file_validation import FileValidationSchema
 from models.proposal_state import ProposalState
 from nodes.context_initializer import context_initializer_node
-from nodes.universal_writer import universal_writer_node
+from nodes.universal_writer import universal_writer_node, universal_writer_stream
 from nodes.prompts_config import SECTIONS_CONFIG
 from controllers.file_controller import sanitize_project_id
 
@@ -164,20 +165,34 @@ async def initialize_proposal(
     # 1. Sanitize project ID
     clean_project_id = sanitize_project_id(project_id)
 
-    # Collect all uploaded files dynamically
-    uploaded_files_list: List[UploadFile] = []
-    if file:
-        uploaded_files_list.extend(file)
-    if files:
-        uploaded_files_list.extend(files)
-    if tender_file:
-        uploaded_files_list.append(tender_file)
-    if company_profile:
-        uploaded_files_list.append(company_profile)
-    if bid_details:
-        uploaded_files_list.append(bid_details)
+    # 2. Validate and group uploads by target subdirectory
+    project_assets_dir = settings.assets_dir / clean_project_id
+    project_assets_dir.mkdir(parents=True, exist_ok=True)
 
-    if not uploaded_files_list:
+    uploads_to_process: List[tuple[UploadFile, FileValidationSchema, Path]] = []
+    
+    def queue_upload(f: UploadFile, subfolder: str = ""):
+        schema = _validate_upload(f)
+        target_dir = project_assets_dir
+        if subfolder:
+            target_dir = project_assets_dir / subfolder
+        safe_name = _sanitize_filename(schema.filename)
+        uploads_to_process.append((f, schema, target_dir / safe_name))
+
+    if file:
+        for f in file:
+            queue_upload(f)
+    if files:
+        for f in files:
+            queue_upload(f)
+    if tender_file:
+        queue_upload(tender_file, "tender-rfp")
+    if company_profile:
+        queue_upload(company_profile, "company-profile")
+    if bid_details:
+        queue_upload(bid_details, "bid-details")
+
+    if not uploads_to_process:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
@@ -186,27 +201,17 @@ async def initialize_proposal(
             }
         )
 
-    # 2. Validate ALL files before writing anything to disk
-    validated: List[tuple[UploadFile, FileValidationSchema]] = []
-    for f in uploaded_files_list:
-        schema = _validate_upload(f)
-        validated.append((f, schema))
-
-    # 3. Create / reuse the project assets directory
-    project_assets_dir = settings.assets_dir / clean_project_id
-    project_assets_dir.mkdir(parents=True, exist_ok=True)
-
-    # 4. Save each file with its original (sanitized) name
+    # 3. Save each file with its original (sanitized) name in the designated subdirectory
     saved_files: List[Dict[str, Any]] = []
-    for f, schema in validated:
-        safe_name = _sanitize_filename(schema.filename)
-        dest_path = project_assets_dir / safe_name
-
+    for f, schema, dest_path in uploads_to_process:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
         await _save_file(f, dest_path)
 
+        # Record saved path relative to assets dir
+        rel_path = dest_path.relative_to(project_assets_dir)
         saved_files.append({
             "original_filename": schema.filename,
-            "saved_filename": safe_name,
+            "saved_filename": str(rel_path),
             "content_type": schema.content_type,
             "size_bytes": schema.size,
         })
@@ -358,6 +363,92 @@ async def generate_section(project_id: str, section_type: str):
 
 
 # ---------------------------------------------------------------------------
+# Endpoint: Generate a Section — Streaming (SSE)
+# ---------------------------------------------------------------------------
+
+@router.post("/generate/{project_id}/{section_type}/stream")
+@router.get("/generate/{project_id}/{section_type}/stream")
+async def generate_section_stream(project_id: str, section_type: str):
+    """
+    Stream a single proposal section using the Universal_Writer_Node via SSE.
+
+    Returns a ``text/event-stream`` response where each event is a JSON object:
+
+    - **Token chunks**: ``{"chunk": "..."}`` — partial Markdown as it's generated.
+    - **Final event**: ``{"done": true, ...}`` — metadata including token usage.
+    - **Terminator**: ``[DONE]`` — signals the stream is complete.
+    - **Errors**: ``{"error": "..."}`` — if something goes wrong.
+
+    The full generated content is persisted to ``shared_memory.json`` after
+    the stream completes (same behavior as the non-streaming endpoint).
+
+    **Path Parameters:**
+      - ``project_id``: The project identifier (must match an initialized project).
+      - ``section_type``: One of the 11 section keys (e.g. ``methodology``).
+    """
+    # 1. Sanitize & validate inputs
+    clean_project_id = sanitize_project_id(project_id)
+    section_key = section_type.strip().lower()
+
+    if section_key not in SECTIONS_CONFIG:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": f"Unknown section type: '{section_type}'.",
+                "valid_sections": list(SECTIONS_CONFIG.keys()),
+            },
+        )
+
+    # 2. Verify the project has been initialized (shared_memory.json exists)
+    project_dir = _STORAGE_ROOT / f"project_{clean_project_id}"
+    try:
+        load_shared_memory(project_dir)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": f"Project '{clean_project_id}' has not been initialized.",
+                "hint": "Call POST /proposals/initialize/{project_id} first.",
+            },
+        )
+
+    # 3. Re-run the initializer to get fresh extracted text (idempotent)
+    from nodes.context_initializer import context_initializer_node as _init_node
+
+    init_state: ProposalState = {"project_id": clean_project_id}
+    init_result = _init_node(init_state)
+
+    if "error" in init_result:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reload project context: {init_result['error']}",
+        )
+
+    # 4. Construct the writer node state
+    writer_state: ProposalState = {
+        "project_id": clean_project_id,
+        "current_section": section_key,
+        "tender_text": init_result.get("tender_text", ""),
+        "company_assets_text": init_result.get("company_assets_text", ""),
+        "bid_details_text": init_result.get("bid_details_text", ""),
+        "additional_assets_text": init_result.get("additional_assets_text", ""),
+        "shared_memory_path": init_result.get("shared_memory_path", ""),
+        "sections": init_result.get("sections", {}),
+    }
+
+    # 5. Return SSE streaming response
+    return StreamingResponse(
+        universal_writer_stream(writer_state),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering if behind proxy
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Endpoint: Get Sections Status / Content
 # ---------------------------------------------------------------------------
 
@@ -443,4 +534,106 @@ async def get_section_content(project_id: str, section_type: str):
         "content": section_data.get("content", ""),
         "content_length": len(section_data.get("content", "")),
     }
+
+
+async def _stream_stored_section(content: str, section_key: str, section_config_type: str):
+    """
+    Simulates streaming of stored section content by breaking it into chunks
+    and yielding them with a small delay, mirroring the SSE format of the generator stream.
+    """
+    import asyncio
+    import json as _json
+
+    # Yield initial chunk if empty, or split by words/spaces
+    if not content.strip():
+        done_payload = {
+            "done": True,
+            "section_type": section_key,
+            "section_config_type": section_config_type,
+            "content_length": 0,
+        }
+        yield f"data: {_json.dumps(done_payload, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    # Split by whitespace but keep the spaces when yielding
+    words = content.split(" ")
+    chunk_size = 4  # yield 4 words at a time to keep it reasonably fast but visible
+    
+    chunks = []
+    for i in range(0, len(words), chunk_size):
+        chunk_words = words[i:i+chunk_size]
+        chunk_text = " ".join(chunk_words)
+        # Add back trailing space if this is not the last chunk
+        if i + chunk_size < len(words):
+            chunk_text += " "
+        chunks.append(chunk_text)
+
+    for chunk in chunks:
+        yield f"data: {_json.dumps({'chunk': chunk}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0.04)  # 40ms delay
+
+    # Final event
+    done_payload = {
+        "done": True,
+        "section_type": section_key,
+        "section_config_type": section_config_type,
+        "content_length": len(content),
+    }
+    yield f"data: {_json.dumps(done_payload, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+@router.post("/sections/{project_id}/{section_type}/stream")
+@router.get("/sections/{project_id}/{section_type}/stream")
+async def get_section_content_stream(project_id: str, section_type: str):
+    """
+    Stream the stored content of a specific proposal section using SSE.
+
+    This endpoint reads the already generated section from ``shared_memory.json``
+    and streams it back to the client chunk-by-chunk with a tiny delay,
+    mirroring the exact SSE format of the generation endpoint.
+    """
+    clean_project_id = sanitize_project_id(project_id)
+    section_key = section_type.strip().lower()
+
+    if section_key not in PROPOSAL_SECTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": f"Unknown section type: '{section_type}'.",
+                "valid_sections": PROPOSAL_SECTIONS,
+            },
+        )
+
+    project_dir = _STORAGE_ROOT / f"project_{clean_project_id}"
+
+    try:
+        shared_memory = load_shared_memory(project_dir)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "message": f"Project '{clean_project_id}' has not been initialized.",
+                "hint": "Call POST /proposals/initialize/{project_id} first.",
+            },
+        )
+
+    sections = shared_memory.get("sections", {})
+    section_data = sections.get(section_key, {"content": "", "status": "EMPTY"})
+    content = section_data.get("content", "")
+
+    # Retrieve section config type (e.g., COVER_LETTER, EXECUTIVE_SUMMARY, etc.)
+    section_config_type = SECTIONS_CONFIG.get(section_key, {}).get("type", "MARKDOWN")
+
+    return StreamingResponse(
+        _stream_stored_section(content, section_key, section_config_type),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 

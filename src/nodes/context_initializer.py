@@ -82,13 +82,56 @@ _ASSETS_ROOT = Path(__file__).resolve().parent.parent / "Assets" / "files"
 # File Discovery Helpers
 # ---------------------------------------------------------------------------
 
+def find_all_company_files(assets_dir: Path) -> list[Path]:
+    """
+    Find all company-related files inside assets_dir recursively.
+    These include files in folders matching company keywords, or files whose
+    names contain the keywords.
+    """
+    company_keywords = ["company", "profile", "experience", "شركة", "ملف", "خبرة", "سوابق"]
+    company_files = []
+    if not assets_dir.exists():
+        return []
+
+    # First, if the company-profile directory exists, collect ALL files inside it directly
+    company_profile_dir = assets_dir / "company-profile"
+    if company_profile_dir.exists() and company_profile_dir.is_dir():
+        for child in company_profile_dir.glob("*"):
+            if child.is_file() and child.suffix.lower() in [".pdf", ".docx", ".doc", ".txt", ".md"]:
+                company_files.append(child)
+    
+    for child in assets_dir.rglob("*"):
+        if child.is_file() and child not in company_files:
+            relative_path = child.relative_to(assets_dir)
+            path_parts = relative_path.parts
+            
+            # Check if any parent folder matches the keywords
+            is_company_file = False
+            for part in path_parts[:-1]:
+                if any(kw in part.lower() for kw in company_keywords):
+                    is_company_file = True
+                    break
+            
+            # Or if the file name itself contains the keywords
+            if not is_company_file:
+                filename = child.name.lower()
+                if any(kw in filename for kw in company_keywords) and child.suffix.lower() in [".pdf", ".docx", ".doc", ".txt", ".md"]:
+                    is_company_file = True
+            
+            if is_company_file and child.suffix.lower() in [".pdf", ".docx", ".doc", ".txt", ".md"]:
+                company_files.append(child)
+                
+    return company_files
+
+
 def _discover_input_files(project_id: str) -> Dict[str, Path]:
     """
     Locate the three required input files inside the project's Assets folder.
 
     Search Strategy:
-      1. Look for files whose name contains known role keywords.
-      2. If a role keyword is not found, log a warning and skip.
+      1. Prioritize files located in specific subdirectories (tender-rfp, company-profile, bid-details).
+      2. Fall back to looking for files whose name contains known role keywords.
+      3. If a role keyword is not found, log a warning and skip.
 
     Parameters
     ----------
@@ -114,28 +157,52 @@ def _discover_input_files(project_id: str) -> Dict[str, Path]:
     discovered: Dict[str, Path] = {}
 
     # --- Tender RFP ---
-    tender_keywords = ["tender", "rfp", "كراسة", "شروط", "مواصفات"]
-    for keyword in tender_keywords:
-        match = find_file_by_role(assets_dir, keyword, [".pdf", ".docx", ".doc"])
-        if match:
-            discovered["tender"] = match
-            break
+    # 1. Check folder first
+    tender_dir = assets_dir / "tender-rfp"
+    if tender_dir.exists() and tender_dir.is_dir():
+        files_in_dir = [p for p in tender_dir.glob("*") if p.is_file() and p.suffix.lower() in [".pdf", ".docx", ".doc", ".txt", ".md"]]
+        if files_in_dir:
+            discovered["tender"] = files_in_dir[0]
+
+    # 2. Fallback to keywords
+    if "tender" not in discovered:
+        tender_keywords = ["tender", "rfp", "كراسة", "شروط", "مواصفات"]
+        for keyword in tender_keywords:
+            match = find_file_by_role(assets_dir, keyword, [".pdf", ".docx", ".doc"])
+            if match:
+                discovered["tender"] = match
+                break
 
     # --- Company Profile / Past Experience ---
-    company_keywords = ["company", "profile", "experience", "شركة", "ملف", "خبرة", "سوابق"]
-    for keyword in company_keywords:
-        match = find_file_by_role(assets_dir, keyword, [".pdf", ".docx", ".doc"])
-        if match:
-            discovered["company"] = match
-            break
+    # 1. Check folder first (handled by find_all_company_files, we just take the preferred one)
+    company_files = find_all_company_files(assets_dir)
+    if company_files:
+        preferred_extensions = [".pdf", ".docx", ".doc", ".md", ".txt"]
+        def sort_key(p: Path) -> int:
+            ext = p.suffix.lower()
+            try:
+                return preferred_extensions.index(ext)
+            except ValueError:
+                return len(preferred_extensions)
+        sorted_company = sorted(company_files, key=sort_key)
+        discovered["company"] = sorted_company[0]
 
     # --- Bid Details ---
-    bid_keywords = ["bid", "details", "عرض", "تفاصيل"]
-    for keyword in bid_keywords:
-        match = find_file_by_role(assets_dir, keyword, [".md", ".txt", ".pdf", ".docx"])
-        if match:
-            discovered["bid"] = match
-            break
+    # 1. Check folder first
+    bid_dir = assets_dir / "bid-details"
+    if bid_dir.exists() and bid_dir.is_dir():
+        files_in_dir = [p for p in bid_dir.glob("*") if p.is_file() and p.suffix.lower() in [".md", ".txt", ".pdf", ".docx"]]
+        if files_in_dir:
+            discovered["bid"] = files_in_dir[0]
+
+    # 2. Fallback to keywords
+    if "bid" not in discovered:
+        bid_keywords = ["bid", "details", "عرض", "تفاصيل"]
+        for keyword in bid_keywords:
+            match = find_file_by_role(assets_dir, keyword, [".md", ".txt", ".pdf", ".docx"])
+            if match:
+                discovered["bid"] = match
+                break
 
     # Log discovery results
     for role in ["tender", "company", "bid"]:
@@ -210,6 +277,7 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     assets_dir = _ASSETS_ROOT / project_id
     discovered_files = _discover_input_files(project_id)
+    company_files = find_all_company_files(assets_dir)
 
     tender_text = ""
     company_assets_text = ""
@@ -217,7 +285,7 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
     additional_parts: list[str] = []
 
     # Map primary paths to skip them when collecting additional assets
-    primary_paths = set(discovered_files.values())
+    primary_paths = set(discovered_files.values()) | set(company_files)
 
     # --- Extract Tender RFP ---
     if "tender" in discovered_files:
@@ -236,18 +304,18 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
         logger.info("Tender RFP file not found — tender_text will be empty.")
 
     # --- Extract Company Profile / Past Experience ---
-    if "company" in discovered_files:
-        try:
-            raw_company = extract_text(discovered_files["company"])
-            company_assets_text = f"=== اسم الملف: {discovered_files['company'].name} ===\n{raw_company}"
-            logger.info(
-                "Company assets text extracted: %d characters from '%s'.",
-                len(company_assets_text),
-                discovered_files["company"].name,
-            )
-        except Exception as exc:
-            logger.error("Failed to extract company assets text: %s", exc)
-            company_assets_text = f"[EXTRACTION ERROR] {exc}"
+    if company_files:
+        company_assets_parts = []
+        for f in company_files:
+            try:
+                raw_company = extract_text(f)
+                if raw_company.strip():
+                    company_assets_parts.append(f"=== اسم الملف: {f.name} ===\n{raw_company}")
+                    logger.info("Company assets text extracted from '%s'.", f.name)
+            except Exception as exc:
+                logger.error("Failed to extract company assets text from '%s': %s", f.name, exc)
+                company_assets_parts.append(f"=== اسم الملف: {f.name} ===\n[EXTRACTION ERROR] {exc}")
+        company_assets_text = "\n\n".join(company_assets_parts)
     else:
         logger.info(
             "Company profile file not found — company_assets_text will be empty."
@@ -273,7 +341,7 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
 
     # --- Extract All Other Files (Additional Assets) ---
     if assets_dir.exists():
-        for child in assets_dir.iterdir():
+        for child in assets_dir.rglob("*"):
             if child.is_file() and child not in primary_paths:
                 try:
                     text = extract_text(child)
