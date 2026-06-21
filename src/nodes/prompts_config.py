@@ -23,6 +23,15 @@ class SectionConfig(TypedDict):
     type: str  # 'static' | 'dynamic'
 
 
+# ANCHOR GUARDRAIL: Forces Gemini to match the RFP sector and stops Software Engineer bias
+DOMAINS_ANCHOR_GUARDRAIL = (
+    "\n\n# STRICT DOMAIN ANCHOR & ANTI-TECH BIAS (GENERIC CONSTRAINT):\n"
+    "- **RFP Sector Overriding**: Analyze the specific sector of the RFP (e.g., Training, Supply, Construction, O&M). "
+    "Your output lifecycle, activities, roles, and technical terms MUST conform strictly to that industry's standard operations.\n"
+    "- **Anti-Tech Bias**: Do NOT assume or introduce software lifecycles, full-stack developers, coding tasks, or IT-specific testing Frameworks (like QA or OWASP) UNLESS the RFP is explicitly categorized as an Information Technology procurement project.\n"
+    "- **Assets as Enablers**: Treat any automated tools, LMS platforms, or technical solutions present in the Company Profile strictly as auxiliary operational tools (Enablers) used to serve the core contract objectives, not as platforms to be engineered from scratch."
+)
+
 SECTIONS_CONFIG: Dict[str, SectionConfig] = {
 
     # ── 1. Cover Letter ──────────────────────────────────────────────────
@@ -150,7 +159,8 @@ SECTIONS_CONFIG: Dict[str, SectionConfig] = {
             "- **Global State Cross-Referencing**: Review the shared memory context. The phases, intervals, and deliverables described here must match 100% with the Timeline and Scope Understanding sections to avoid structural conflicts.\n"
             "- **Relative Time Framework**: Use strict relative numeric calendar units matching the contract's framework (e.g., Month 1, Months 2-4 / الشهر 1، الشهور 2-4). Do not invent specific calendar days or years.\n"
             "- **Markdown Presentation**: Present the workflow and phase gates in a comprehensive Markdown table (columns: Phase / المرحلة, Core Activities / الأنشطة الأساسية, Expected Deliverables / المخرجات المتوقعة, Stage Gate / بوابة المرحلة)."
-        ),
+             + DOMAINS_ANCHOR_GUARDRAIL
+        ),  
         "type": "dynamic",
     },
 
@@ -173,6 +183,7 @@ SECTIONS_CONFIG: Dict[str, SectionConfig] = {
             "2. **Staffing Matrix Table**: Columns exactly: (المسمى الوظيفي, المسؤوليات التشغيلية في المشروع, المؤهلات والخبرات المطلوبة, نسبة التفرغ للمشروع).\n\n"
             "**CRITICAL OUTPUT LANGUAGE CONSTRAINT:**\n"
             "The entire response, hierarchy, and table structure must be generated in elite, professional Modern Standard Arabic (Fusha) ONLY. No empty fields or placeholders allowed."
+             + DOMAINS_ANCHOR_GUARDRAIL
         ),
         "type": "dynamic",
     },
@@ -209,6 +220,7 @@ SECTIONS_CONFIG: Dict[str, SectionConfig] = {
             "- **Sector-Specific Risk Register**: Tailor all identified risks dynamically to the actual nature of the project scope extracted from the RFP (e.g., Supply chain delays for supply projects, safety risks for construction, operational churn for services). Avoid generic or irrelevant risks.\n"
             "- **Global State Cross-Referencing**: Align risk owners with the roles defined in the Team Structure section, and align quality checkpoints with the milestones defined in the Methodology and Timeline sections in shared memory.\n"
             "- **Markdown Presentation**: Present the Risk Register in a Markdown table (columns: Risk ID / رقم الخطر, Category / الفئة, Description / الوصف, Likelihood / الاحتمالية, Impact / التأثير, Mitigation Strategy / استراتيجية التخفيف, Owner / المسؤول). Present the QA KPIs in a separate Markdown table."
+             + DOMAINS_ANCHOR_GUARDRAIL
         ),
         "type": "dynamic",
     },
@@ -217,29 +229,19 @@ SECTIONS_CONFIG: Dict[str, SectionConfig] = {
     "pricing": {
         "system_prompt": (
             "You are an elite financial consultant, commercial estimator, and pricing expert for enterprise and government contracts in the Saudi/Gulf market.\n\n"
-            
             "# CORE OBJECTIVE\n"
-            "Write the complete 'Financial Proposal' (العرض المالي والتسعير). Your goal is to analyze the project scope, deliverables, and the Bill of Quantities (BOQ) from the RFP. "
-            "If the provided project documents (RFP, company profile, bid details, or additional context files) contain any specific prices, rates, or financial figures, use them. "
-            "HOWEVER, if the provided project documents do NOT contain/provide any prices, you MUST leave the price values/cells (such as Unit Price, Total Cost, Grand Total, Milestone amounts, and guarantees) entirely blank (e.g., leave the cell empty or use a blank space ' ') in all tables and narrative so they can be filled manually. "
-            "Do NOT invent, calculate, or estimate realistic numeric prices if no pricing is present in the source documents.\n\n"
-            
-            "# SMART SECTOR-BASED ESTIMATION LOGIC:\n"
-            "- **Context-Driven Estimation**: Analyze the provided documents for any pricing or financial values. If pricing information is present in the documents, estimate or extend the prices mathematically based on the scale of the target project. If no pricing information is provided in any document, leave the pricing values blank.\n"
-            "- **Data-Driven Pivot**: Check for any explicit rate cards or financial benchmarks in the provided context files. If missing and no prices are specified in the documents, do NOT estimate or invent any numbers; leave the pricing fields blank.\n\n"
-            
-            "# STRICT MATHEMATICAL INTEGRITY & WEIGHTS:\n"
-            "- **100% Mathematical Accuracy**: If prices are provided and filled, every line item (Unit Price * Quantity) must sum up perfectly to the Subtotals, and all Subtotals must perfectly equal the Grand Total Cost. If prices are not provided, leave these values blank.\n"
-            "- **Payment Milestones Sync**: Create a milestone payment schedule table aligned relatively with the project phases (e.g., Month 1, Months 2-4). If prices are provided, inject the milestone payment amounts. If prices are not provided, leave the payment amounts blank.\n"
-            "- **Guarantees and Taxes**: If prices are provided, calculate the exact required initial guarantee (e.g., 1% of your calculated grand total) and final guarantee (e.g., 5% of your calculated grand total) if mandated by the RFP. If prices are blank, leave the guarantee amounts blank.\n\n"
-            
-            "# PRESENTATION & LANGUAGE FACTUALITY:\n"
-            "1. **Pricing Methodology Narrative**: Write a high-end corporate narrative explaining the output-based commercial model.\n"
-            "2. **Detailed Bill of Quantities (BOQ) Table**: Generate a complete Markdown table displaying the itemized costing. Columns exactly: (رقم البند, وصف البند, الوحدة, الكمية, السعر الإفرادي (SAR), إجمالي التكلفة (SAR)). If no prices are provided in the documents, leave the 'السعر الإفرادي (SAR)' and 'إجمالي التكلفة (SAR)' columns blank.\n"
-            "3. **Milestone Schedule Table**: Columns exactly: (معلم الدفع / المرحلة, نسبة الدفعة (%), المبلغ المستحق (SAR), موعد الاستحقاق النسبي, ملاحظات الصرف). If no prices are provided in the documents, leave the 'المبلغ المستحق (SAR)' column blank.\n"
-            "4. **Inclusions & Exclusions**: Detail clear commercial boundaries (T&C) to protect the commercial bid based strictly on the project domain.\n\n"
+            "Write the complete 'Financial Proposal' (العرض المالي والتسعير). Your goal is to extract and analyze the Bill of Quantities (BOQ) from the RFP documents.\n\n"
+            "# STRICT NO-HALLUCINATION PRICING RULE:\n"
+            "- If the source RFP or provided context explicitly includes pricing figures or rates, use them exactly. "
+            "HOWEVER, if no pricing data is provided in the source documents, you MUST generate the complete table structures but leave the numeric price column cells entirely blank (e.g., use an empty space ' ' inside the markdown cell).\n"
+            "- **CRITICAL**: Do NOT invent fictional numbers, and do NOT skip generating the tables. The tables must be fully structured with all descriptions and quantities populated, leaving only the price-specific values empty.\n\n"
+            "# PRESENTATION FORMAT & FACTUALITY:\n"
+            "1. **Pricing Methodology Narrative**: Write an elite corporate narrative explaining an outcome-based commercial model tailored to the RFP's sector.\n"
+            "2. **Detailed Bill of Quantities (BOQ) Table**: Generate a complete Markdown table. Columns exactly: (رقم البند, وصف البند, الوحدة, الكمية, السعر الإفرادي (SAR), إجمالي التكلفة (SAR)). If untariffed, populate rows based on RFP items and leave currency/cost cells empty.\n"
+            "3. **Milestone Schedule Table**: Columns exactly: (معلم الدفع / المرحلة, نسبة الدفعة (%), المبلغ المستحق (SAR), موعد الاستحقاق النسبي, ملاحظات الصرف). Ensure percentage column logically sums up to 100% relatively across phases, leaving total amounts empty if untariffed.\n"
+            "4. **Inclusions & Exclusions**: Detail clear commercial boundaries (T&C) based strictly on the project domain.\n\n"
             "**CRITICAL OUTPUT LANGUAGE CONSTRAINT:**\n"
-            "The entire financial proposal, table frameworks, currency notation (strictly SAR / ريال سعودي), and numbers must be rendered in elite, professional Modern Standard Arabic (Fusha) ONLY. No English text placeholders or empty fields allowed."
+            "The entire financial proposal, table frameworks, and text must be rendered in elite, professional Modern Standard Arabic (Fusha) ONLY. No conversational preambles allowed."
         ),
         "type": "dynamic",
     },
