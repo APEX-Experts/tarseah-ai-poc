@@ -227,6 +227,43 @@ def _chunk_text(text: str, chunk_size: int = 1200) -> list[str]:
     return chunks
 
 
+def has_pricing_info(text: str) -> bool:
+    """
+    Check if the text contains any pricing/financial cost information.
+    Specifically looks for numeric figures associated with currency markers (SAR, USD, ريال, etc.).
+    """
+    if not text:
+        return False
+    import re
+    import unicodedata
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    
+    # Look for currency keywords
+    currency_kw = ["sar", "usd", "ريال", "ر.س", "دولار"]
+    has_currency = any(kw in normalized for kw in currency_kw)
+    
+    # Look for price context words
+    price_context_kw = ["سعر", "أسعار", "تكلفة", "تكاليف", "قيمة", "المبلغ", "التسعير", "price", "cost", "pricing", "budget", "rate"]
+    has_price_context = any(kw in normalized for kw in price_context_kw)
+    
+    # Look for numbers (digits greater than 0)
+    numbers = re.findall(r'\b\d+(?:,\d{3})*(?:\.\d+)?\b', normalized)
+    
+    # We consider it has pricing if:
+    # 1. It has a currency keyword and any number
+    # 2. It has price context keywords and a significant number (e.g. >= 100)
+    if has_currency and numbers:
+        return True
+        
+    for num in numbers:
+        clean_num = num.replace(',', '').split('.')[0]
+        if clean_num.isdigit() and int(clean_num) >= 100:
+            if has_price_context:
+                return True
+                
+    return False
+
+
 def filter_relevant_context(section_key: str, text: str, max_chars: int = 15000) -> str:
     """
     Filters document text to return only the chunks most relevant to the given section.
@@ -331,6 +368,7 @@ def _build_user_prompt(
     section_key: str,
     project_documents_text: str,
     compiled_memory: str,
+    has_prices: bool = True,
 ) -> str:
     """
     Construct the final user prompt that gets sent to Gemini.
@@ -346,6 +384,8 @@ def _build_user_prompt(
         Consolidated and filtered text from all project documents.
     compiled_memory : str
         Compiled text of all previously generated sections.
+    has_prices : bool, optional
+        Flag indicating if the documents contain any pricing information.
 
     Returns
     -------
@@ -373,6 +413,14 @@ def _build_user_prompt(
         prompt_parts.append(
             "### ٢. الأقسام المكتملة مسبقاً (يجب الحفاظ على الاتساق معها وعدم تكرار محتواها):\n"
             f"{compiled_memory}\n"
+        )
+
+    # -- Missing pricing alert --
+    if section_key == "pricing" and not has_prices:
+        prompt_parts.append(
+            "### تنبيه هام جداً بشأن الأسعار المفقودة:\n"
+            "- **تنبيه هام جداً**: لم يتم العثور على أي معلومات تسعير أو قيم مالية في مستندات المشروع المقدمة.\n"
+            "- **إلزامية ترك الأسعار فارغة**: يجب ترك جميع حقول الأسعار فارغة تماماً (مثل خانة فارغة في الجداول ` | | ` أو مسافة فارغة) في الجداول وفي النص، ليتم تعبئتها يدوياً لاحقاً. يمنع منعاً باتاً تخمين أو اختراع أي أرقام أو تقديرات مالية لـ (السعر الإفرادي، إجمالي التكلفة، الدفعات، الضمانات، المجاميع).\n"
         )
 
     # -- Strict output constraints --
@@ -537,10 +585,16 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     logger.info("Context Filtering Stats for section '%s':", current_section)
     logger.info("  Combined Project Documents: %d -> %d chars", len(combined_docs_text), len(filtered_docs))
 
+    has_prices = True
+    if current_section == "pricing":
+        has_prices = has_pricing_info(combined_docs_text)
+        logger.info("Pricing check: documents contain pricing information = %s", has_prices)
+
     user_prompt = _build_user_prompt(
         section_key=current_section,
         project_documents_text=filtered_docs,
         compiled_memory=compiled_memory,
+        has_prices=has_prices,
     )
 
     logger.info("User prompt constructed: %d chars total.", len(user_prompt))
@@ -820,10 +874,16 @@ async def universal_writer_stream(state: ProposalState):
     else:
         filtered_docs = filter_relevant_context(current_section, combined_docs_text)
 
+    has_prices = True
+    if current_section == "pricing":
+        has_prices = has_pricing_info(combined_docs_text)
+        logger.info("Pricing check [STREAM]: documents contain pricing information = %s", has_prices)
+
     user_prompt = _build_user_prompt(
         section_key=current_section,
         project_documents_text=filtered_docs,
         compiled_memory=compiled_memory,
+        has_prices=has_prices,
     )
 
     messages = [

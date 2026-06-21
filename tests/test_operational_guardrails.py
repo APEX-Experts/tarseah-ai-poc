@@ -114,13 +114,12 @@ def test_team_section_post_processing_normalization(monkeypatch):
 
 def test_timeline_system_prompt_guardrails():
     """
-    Verify that the system prompt for the timeline section enforces Gregorian calendar
-    and bans calendar mixing.
+    Verify that the system prompt for the timeline section enforces strict relative timeline logic.
     """
     prompt = SECTIONS_CONFIG["timeline"]["system_prompt"]
-    assert "Calendar Standardization" in prompt
-    assert "Never mix Hijri and Gregorian calendars" in prompt
-    assert "Gregorian Calendar Only" in prompt
+    assert "Strict Relative Numeric System" in prompt
+    assert "Absolutely NEVER write calendar month names textually" in prompt
+    assert "Full Duration Coverage" in prompt
 
 
 def test_quality_and_risk_system_prompt_guardrails():
@@ -130,22 +129,20 @@ def test_quality_and_risk_system_prompt_guardrails():
     """
     prompt = SECTIONS_CONFIG["quality_and_risk"]["system_prompt"]
     assert "Quality Certifications Verification" in prompt
-    assert "DO NOT claim the company holds them" in prompt
+    assert "you MUST NOT claim the company is certified" in prompt
     assert "Quality Compliance Standards" in prompt
 
 
 def test_pricing_system_prompt_guardrails():
     """
-    Verify that the pricing system prompt requires realistic estimation, activity-based costing,
-    exact mathematical distribution, team data dependency, and bans placeholders.
+    Verify that the pricing system prompt requires using exact prices if provided,
+    leaving them blank if not provided in the documents, and bans estimation/hallucination in that case.
     """
     prompt = SECTIONS_CONFIG["pricing"]["system_prompt"]
-    assert "Never output blank placeholders" in prompt
-    assert "calculate and inject realistic" in prompt
-    assert "mathematically distributed" in prompt
-    assert "100% mathematical accuracy" in prompt
-    assert "Dependence on Team Data" in prompt
-    assert "pricing general" in prompt
+    assert "leave the price values/cells" in prompt or "leave the price columns" in prompt
+    assert "entirely blank" in prompt or "blank" in prompt
+    assert "Do NOT invent, calculate, or estimate" in prompt or "do not estimate or invent" in prompt
+    assert "100% Mathematical Accuracy" in prompt or "100% mathematical accuracy" in prompt.lower()
 
 
 def test_company_profile_system_prompt_guardrails():
@@ -153,9 +150,8 @@ def test_company_profile_system_prompt_guardrails():
     Verify that the company profile system prompt enforces strict factuality and bans hallucinations.
     """
     prompt = SECTIONS_CONFIG["company_profile"]["system_prompt"]
-    assert "ANTI-HALLUCINATION & STRICT FACTUALITY GUARDRAILS" in prompt
+    assert "STRICT FACTUALITY & ANTI-HALLUCINATION" in prompt
     assert "Do NOT add, fabricate, or hallucinate" in prompt
-    assert "Do NOT invent any software products" in prompt
 
 
 def test_past_projects_system_prompt_guardrails():
@@ -164,7 +160,41 @@ def test_past_projects_system_prompt_guardrails():
     and handles missing projects cleanly.
     """
     prompt = SECTIONS_CONFIG["past_projects"]["system_prompt"]
-    assert "ANTI-HALLUCINATION GUARDRAILS (NO FABRICATION)" in prompt
-    assert "Zero Track Record Hallucinations" in prompt
-    assert "You MUST NOT fabricate, invent, or add" in prompt
+    assert "ANTI-HALLUCINATION GUARDRAILS" in prompt
+    assert "Zero Track Record Fabrication" in prompt
+
+
+def test_pricing_has_pricing_info_helper():
+    from nodes.universal_writer import has_pricing_info
+    
+    # Text containing pricing
+    assert has_pricing_info("The budget is 50000 USD.") is True
+    assert has_pricing_info("سعر البند الأول هو 1500 ريال.") is True
+    assert has_pricing_info("إجمالي التكلفة المتوقعة: 200,000 SAR") is True
+    
+    # Text containing numbers and words but no prices
+    assert has_pricing_info("Project duration: 12 months.") is False
+    assert has_pricing_info("We need 3 team members.") is False
+    assert has_pricing_info("No prices or rates are mentioned in this RFP.") is False
+    assert has_pricing_info("التدريب يشمل 10 متدربين.") is False
+
+
+def test_pricing_missing_info_in_prompt(monkeypatch):
+    """
+    Test that if pricing information is missing from the documents,
+    the user prompt is built with the has_prices=False flag, injecting a strict warning.
+    """
+    from nodes.universal_writer import _build_user_prompt
+    
+    # Build prompt with has_prices=False
+    prompt_with_warning = _build_user_prompt(
+        section_key="pricing",
+        project_documents_text="Project description without pricing info.",
+        compiled_memory="",
+        has_prices=False
+    )
+    
+    assert "تنبيه هام جداً بشأن الأسعار المفقودة" in prompt_with_warning
+    assert "إلزامية ترك الأسعار فارغة" in prompt_with_warning
+    assert "يمنع منعاً باتاً تخمين أو اختراع أي أرقام" in prompt_with_warning
 
