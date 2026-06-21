@@ -77,6 +77,12 @@ _STORAGE_ROOT = Path(__file__).resolve().parent.parent / "storage"
 _MODEL_NAME = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 _TEMPERATURE = 0.4  # Slightly creative but factually grounded
 _MAX_RETRIES = 3
+# Maximum output tokens — MUST be set explicitly.
+# Without this, the Groq API applies a small default cap (often 1024-4096)
+# which silently truncates large sections (pricing BOQ, timelines, etc.).
+# openai/gpt-oss-20b supports up to 65,536 output tokens;
+# 16,384 provides ample headroom for the largest Arabic proposal sections.
+_MAX_OUTPUT_TOKENS = int(os.getenv("GROQ_MAX_OUTPUT_TOKENS", "16384"))
 
 
 # ---------------------------------------------------------------------------
@@ -104,8 +110,12 @@ def _get_llm() -> ChatGroq:
             temperature=_TEMPERATURE,
             max_retries=_MAX_RETRIES,
             api_key=groq_api_key,
+            max_tokens=_MAX_OUTPUT_TOKENS,
         )
-        logger.info("Groq model initialized: %s (temp=%.2f)", model_name, _TEMPERATURE)
+        logger.info(
+            "Groq model initialized: %s (temp=%.2f, max_tokens=%d)",
+            model_name, _TEMPERATURE, _MAX_OUTPUT_TOKENS,
+        )
     return _llm
 
 
@@ -645,6 +655,21 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
             output_tokens,
         )
 
+        # Detect truncation via finish_reason
+        finish_reason = None
+        gen_info = getattr(response, "response_metadata", {})
+        if gen_info:
+            finish_reason = gen_info.get("finish_reason")
+        was_truncated = finish_reason == "length"
+        if was_truncated:
+            logger.warning(
+                "⚠️ TRUNCATION DETECTED for section '%s'! "
+                "finish_reason='length' — the model was forced to stop before completing. "
+                "Output tokens used: %d / max: %d. "
+                "Consider increasing GROQ_MAX_OUTPUT_TOKENS.",
+                current_section, output_tokens, _MAX_OUTPUT_TOKENS,
+            )
+
     except Exception as exc:
         error_msg = f"Groq invocation failed for section '{current_section}': {exc}"
         logger.error(error_msg, exc_info=True)
@@ -690,6 +715,8 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
         "current_section": current_section,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "was_truncated": was_truncated,
+        "finish_reason": finish_reason,
     }
 
     completed_count = sum(
@@ -875,6 +902,8 @@ async def universal_writer_stream(state: ProposalState):
     input_tokens = 0
     output_tokens = 0
     text_buffer = ""
+    finish_reason = None
+    was_truncated = False
 
     try:
         llm = _get_llm()
@@ -923,6 +952,20 @@ async def universal_writer_stream(state: ProposalState):
                 if token_usage:
                     input_tokens = token_usage.get("prompt_tokens", input_tokens)
                     output_tokens = token_usage.get("completion_tokens", output_tokens)
+
+            # Capture finish_reason from the final chunk (set by Groq on the last streamed chunk)
+            chunk_meta = getattr(chunk, "response_metadata", {})
+            if chunk_meta and chunk_meta.get("finish_reason"):
+                finish_reason = chunk_meta["finish_reason"]
+                if finish_reason == "length":
+                    was_truncated = True
+                    logger.warning(
+                        "⚠️ TRUNCATION DETECTED [STREAM] for section '%s'! "
+                        "finish_reason='length' — the model was forced to stop before completing. "
+                        "Output tokens used: %d / max: %d. "
+                        "Consider increasing GROQ_MAX_OUTPUT_TOKENS.",
+                        current_section, output_tokens, _MAX_OUTPUT_TOKENS,
+                    )
 
         # Flush any remaining text in the buffer
         if text_buffer:
@@ -998,6 +1041,8 @@ async def universal_writer_stream(state: ProposalState):
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "content_length": len(generated_markdown),
+        "was_truncated": was_truncated,
+        "finish_reason": finish_reason,
         "sections_progress": {
             key: {
                 "status": val.get("status", "EMPTY"),
@@ -1006,5 +1051,11 @@ async def universal_writer_stream(state: ProposalState):
             for key, val in updated_sections.items()
         },
     }
+    if was_truncated:
+        done_payload["truncation_warning"] = (
+            f"⚠️ Section '{current_section}' was truncated by the model "
+            f"(finish_reason='length'). The output may be incomplete. "
+            f"Output tokens: {output_tokens}/{_MAX_OUTPUT_TOKENS}."
+        )
     yield f"data: {_json.dumps(done_payload, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"

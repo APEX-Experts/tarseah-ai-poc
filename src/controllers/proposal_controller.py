@@ -344,7 +344,7 @@ async def generate_section(project_id: str, section_type: str):
         )
 
     # 6. Return the generated content
-    return {
+    response_payload = {
         "status": "success",
         "project_id": clean_project_id,
         "section_type": section_key,
@@ -352,6 +352,8 @@ async def generate_section(project_id: str, section_type: str):
         "generated_markdown": writer_result.get("output_markdown", ""),
         "input_tokens": writer_result.get("input_tokens", 0),
         "output_tokens": writer_result.get("output_tokens", 0),
+        "was_truncated": writer_result.get("was_truncated", False),
+        "finish_reason": writer_result.get("finish_reason"),
         "sections_progress": {
             key: {
                 "status": val.get("status", "EMPTY"),
@@ -360,6 +362,12 @@ async def generate_section(project_id: str, section_type: str):
             for key, val in writer_result.get("sections", {}).items()
         },
     }
+    if writer_result.get("was_truncated"):
+        response_payload["truncation_warning"] = (
+            f"⚠️ Section '{section_key}' was truncated by the model "
+            f"(finish_reason='length'). The output may be incomplete."
+        )
+    return response_payload
 
 
 # ---------------------------------------------------------------------------
