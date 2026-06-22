@@ -40,7 +40,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from helpers.config import settings
-from helpers.shared_memory import load_shared_memory, PROPOSAL_SECTIONS
+from helpers.shared_memory import load_shared_memory, load_extracted_texts, PROPOSAL_SECTIONS
 from models.file_validation import FileValidationSchema
 from models.proposal_state import ProposalState
 from nodes.context_initializer import context_initializer_node
@@ -303,39 +303,49 @@ async def generate_section(
             },
         )
 
-    # 3. Build the LangGraph state from the persisted shared memory
-    #    The tender_text and company_assets_text were extracted during
-    #    initialization — we need to reload them from the context_initializer
-    #    output. Since we're file-based, we re-run the text extraction
-    #    by invoking the context_initializer in read-only mode, or we
-    #    store the extracted texts. For efficiency, we store them in
-    #    shared_memory during initialization.
-    #
-    #    CURRENT APPROACH: Re-extract from the Assets folder to keep
-    #    shared_memory.json focused on section content only.
-    from nodes.context_initializer import context_initializer_node as _init_node
+    # 3. Load cached extracted texts from shared_memory.json
+    #    (stored during initialization — avoids re-running the expensive
+    #    text extraction on every generate call)
+    cached_texts = load_extracted_texts(project_dir)
 
-    # Re-run the initializer to get fresh extracted text
-    # (it's idempotent — it just re-reads files and re-creates shared_memory)
-    init_state: ProposalState = {"project_id": clean_project_id}
-    init_result = _init_node(init_state)
+    if cached_texts:
+        tender_text = cached_texts.get("tender_text", "")
+        company_assets_text = cached_texts.get("company_assets_text", "")
+        bid_details_text = cached_texts.get("bid_details_text", "")
+        additional_assets_text = cached_texts.get("additional_assets_text", "")
+        sections = shared_memory.get("sections", {})
+        shared_memory_path = str(project_dir / "shared_memory.json")
+    else:
+        # Fallback for projects initialized before text caching was added:
+        # re-run the context initializer to extract texts
+        from nodes.context_initializer import context_initializer_node as _init_node
 
-    if "error" in init_result:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to reload project context: {init_result['error']}",
-        )
+        init_state: ProposalState = {"project_id": clean_project_id}
+        init_result = _init_node(init_state)
+
+        if "error" in init_result:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to reload project context: {init_result['error']}",
+            )
+
+        tender_text = init_result.get("tender_text", "")
+        company_assets_text = init_result.get("company_assets_text", "")
+        bid_details_text = init_result.get("bid_details_text", "")
+        additional_assets_text = init_result.get("additional_assets_text", "")
+        sections = init_result.get("sections", {})
+        shared_memory_path = init_result.get("shared_memory_path", "")
 
     # 4. Construct the writer node state
     writer_state: ProposalState = {
         "project_id": clean_project_id,
         "current_section": section_key,
-        "tender_text": init_result.get("tender_text", ""),
-        "company_assets_text": init_result.get("company_assets_text", ""),
-        "bid_details_text": init_result.get("bid_details_text", ""),
-        "additional_assets_text": init_result.get("additional_assets_text", ""),
-        "shared_memory_path": init_result.get("shared_memory_path", ""),
-        "sections": init_result.get("sections", {}),
+        "tender_text": tender_text,
+        "company_assets_text": company_assets_text,
+        "bid_details_text": bid_details_text,
+        "additional_assets_text": additional_assets_text,
+        "shared_memory_path": shared_memory_path,
+        "sections": sections,
         "language": language,
     }
 
@@ -435,28 +445,47 @@ async def generate_section_stream(
             },
         )
 
-    # 3. Re-run the initializer to get fresh extracted text (idempotent)
-    from nodes.context_initializer import context_initializer_node as _init_node
+    # 3. Load cached extracted texts from shared_memory.json
+    cached_texts = load_extracted_texts(project_dir)
 
-    init_state: ProposalState = {"project_id": clean_project_id}
-    init_result = _init_node(init_state)
+    if cached_texts:
+        tender_text = cached_texts.get("tender_text", "")
+        company_assets_text = cached_texts.get("company_assets_text", "")
+        bid_details_text = cached_texts.get("bid_details_text", "")
+        additional_assets_text = cached_texts.get("additional_assets_text", "")
+        shared_memory_data = load_shared_memory(project_dir)
+        sections = shared_memory_data.get("sections", {})
+        shared_memory_path = str(project_dir / "shared_memory.json")
+    else:
+        # Fallback for projects initialized before text caching was added
+        from nodes.context_initializer import context_initializer_node as _init_node
 
-    if "error" in init_result:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to reload project context: {init_result['error']}",
-        )
+        init_state: ProposalState = {"project_id": clean_project_id}
+        init_result = _init_node(init_state)
+
+        if "error" in init_result:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to reload project context: {init_result['error']}",
+            )
+
+        tender_text = init_result.get("tender_text", "")
+        company_assets_text = init_result.get("company_assets_text", "")
+        bid_details_text = init_result.get("bid_details_text", "")
+        additional_assets_text = init_result.get("additional_assets_text", "")
+        sections = init_result.get("sections", {})
+        shared_memory_path = init_result.get("shared_memory_path", "")
 
     # 4. Construct the writer node state
     writer_state: ProposalState = {
         "project_id": clean_project_id,
         "current_section": section_key,
-        "tender_text": init_result.get("tender_text", ""),
-        "company_assets_text": init_result.get("company_assets_text", ""),
-        "bid_details_text": init_result.get("bid_details_text", ""),
-        "additional_assets_text": init_result.get("additional_assets_text", ""),
-        "shared_memory_path": init_result.get("shared_memory_path", ""),
-        "sections": init_result.get("sections", {}),
+        "tender_text": tender_text,
+        "company_assets_text": company_assets_text,
+        "bid_details_text": bid_details_text,
+        "additional_assets_text": additional_assets_text,
+        "shared_memory_path": shared_memory_path,
+        "sections": sections,
         "language": language,
     }
 

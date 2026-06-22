@@ -29,6 +29,93 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Text Cleaning — Remove PDF/DOCX Extraction Artifacts
+# ---------------------------------------------------------------------------
+
+def clean_extracted_text(text: str) -> str:
+    """
+    Remove common extraction artifacts that waste LLM tokens without
+    contributing meaningful content.
+
+    Cleans:
+      - Standalone page numbers (e.g. ``\\n  12  \\n``, ``Page 3 of 15``).
+      - Repeated header/footer lines (lines appearing 3+ times across the text).
+      - Decorative separator lines (underscores, dashes, equals signs).
+      - Excessive consecutive blank lines (collapsed to max 2).
+      - Trailing/leading whitespace per line.
+
+    Parameters
+    ----------
+    text : str
+        Raw extracted text from a PDF, DOCX, or other document.
+
+    Returns
+    -------
+    str
+        Cleaned text with artifacts removed.
+    """
+    import re
+    from collections import Counter
+
+    if not text:
+        return ""
+
+    lines = text.split("\n")
+
+    # ── Pass 1: Remove standalone page numbers ──
+    # Matches lines that are just a number, or "Page X of Y", etc.
+    page_num_pattern = re.compile(
+        r"^\s*(?:(?:Page|الصفحة|صفحة)\s*)?\d+\s*(?:(?:of|من|/)\s*\d+)?\s*$",
+        re.IGNORECASE,
+    )
+    lines = [ln for ln in lines if not page_num_pattern.match(ln)]
+
+    # ── Pass 2: Remove decorative separator lines ──
+    # Lines that are just underscores, dashes, equals, dots, or stars
+    separator_pattern = re.compile(r"^\s*[_\-=.*─━═▬■□●◆]{3,}\s*$")
+    lines = [ln for ln in lines if not separator_pattern.match(ln)]
+
+    # ── Pass 3: Detect and remove repeated header/footer lines ──
+    # Lines that appear 3+ times are likely headers/footers repeated per page
+    stripped_lines = [ln.strip() for ln in lines]
+    line_counts = Counter(stripped_lines)
+    # Only remove short lines (< 120 chars) that repeat — long paragraphs may
+    # legitimately repeat in templates
+    frequent_lines = {
+        ln for ln, count in line_counts.items()
+        if count >= 3 and 0 < len(ln) < 120
+    }
+    if frequent_lines:
+        logger.debug(
+            "Removing %d frequently repeated header/footer patterns.",
+            len(frequent_lines),
+        )
+        lines = [ln for ln in lines if ln.strip() not in frequent_lines]
+
+    # ── Pass 4: Collapse excessive blank lines ──
+    cleaned_lines: list[str] = []
+    blank_count = 0
+    for ln in lines:
+        stripped = ln.strip()
+        if not stripped:
+            blank_count += 1
+            if blank_count <= 2:
+                cleaned_lines.append("")
+        else:
+            blank_count = 0
+            cleaned_lines.append(stripped)
+
+    result = "\n".join(cleaned_lines).strip()
+    logger.debug(
+        "Text cleaned: %d -> %d chars (%.1f%% reduction).",
+        len(text),
+        len(result),
+        (1 - len(result) / len(text)) * 100 if text else 0,
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # PDF Extraction
 # ---------------------------------------------------------------------------
 
@@ -223,7 +310,8 @@ def extract_text(file_path: Path) -> str:
             f"Unsupported file extension '{ext}'. Supported formats: {supported}"
         )
 
-    return extractor(file_path)
+    raw_text = extractor(file_path)
+    return clean_extracted_text(raw_text)
 
 
 def find_file_by_role(

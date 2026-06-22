@@ -58,15 +58,15 @@ SHARED_MEMORY_FILENAME = "shared_memory.json"
 def build_default_sections() -> Dict[str, Dict[str, str]]:
     """
     Return a fresh dictionary of the 11 sections, each initialized to
-    ``{"content": "", "status": "EMPTY"}``.
+    ``{"content": "", "status": "EMPTY", "summary": ""}``.
 
     Returns
     -------
     dict
-        ``{ "cover_letter": {"content": "", "status": "EMPTY"}, ... }``
+        ``{ "cover_letter": {"content": "", "status": "EMPTY", "summary": ""}, ... }``
     """
     return {
-        section: {"content": "", "status": "EMPTY"}
+        section: {"content": "", "status": "EMPTY", "summary": ""}
         for section in PROPOSAL_SECTIONS
     }
 
@@ -163,6 +163,7 @@ def update_section(
     section_key: str,
     content: str,
     status: str = "DRAFT",
+    summary: str = "",
 ) -> None:
     """
     Update a single section in the ``shared_memory.json`` file.
@@ -177,6 +178,9 @@ def update_section(
         The generated content for this section.
     status : str
         New status — typically ``"DRAFT"``, ``"REVIEW"``, or ``"FINAL"``.
+    summary : str
+        A condensed bullet-point summary of the section content.
+
 
     Raises
     ------
@@ -190,9 +194,15 @@ def update_section(
         )
 
     memory = load_shared_memory(project_dir)
+    
+    # Preserve existing summary if one isn't provided
+    existing_entry = memory["sections"].get(section_key, {})
+    new_summary = summary if summary else existing_entry.get("summary", "")
+
     memory["sections"][section_key] = {
         "content": content,
         "status": status,
+        "summary": new_summary,
     }
 
     # Update completed-sections count
@@ -210,6 +220,58 @@ def update_section(
         completed,
         len(PROPOSAL_SECTIONS),
     )
+
+
+def store_extracted_texts(
+    project_dir: Path,
+    tender_text: str = "",
+    company_assets_text: str = "",
+    bid_details_text: str = "",
+    additional_assets_text: str = "",
+) -> None:
+    """
+    Persist extracted document texts into ``shared_memory.json`` so they
+    can be loaded directly without re-running the context initializer.
+
+    Parameters
+    ----------
+    project_dir : Path
+        The project directory.
+    tender_text, company_assets_text, bid_details_text, additional_assets_text : str
+        The extracted text from each document category.
+    """
+    memory = load_shared_memory(project_dir)
+    memory["extracted_texts"] = {
+        "tender_text": tender_text,
+        "company_assets_text": company_assets_text,
+        "bid_details_text": bid_details_text,
+        "additional_assets_text": additional_assets_text,
+    }
+    memory_path = Path(project_dir) / SHARED_MEMORY_FILENAME
+    _write_json(memory_path, memory)
+    logger.info(
+        "Stored extracted texts in shared_memory.json "
+        "(tender=%d, company=%d, bid=%d, additional=%d chars).",
+        len(tender_text),
+        len(company_assets_text),
+        len(bid_details_text),
+        len(additional_assets_text),
+    )
+
+
+def load_extracted_texts(project_dir: Path) -> Dict[str, str] | None:
+    """
+    Load previously stored extracted texts from ``shared_memory.json``.
+
+    Returns
+    -------
+    dict | None
+        A dict with keys ``tender_text``, ``company_assets_text``,
+        ``bid_details_text``, ``additional_assets_text``.
+        Returns ``None`` if extracted texts have not been stored yet.
+    """
+    memory = load_shared_memory(project_dir)
+    return memory.get("extracted_texts")
 
 
 # ---------------------------------------------------------------------------

@@ -62,6 +62,7 @@ from helpers.shared_memory import (
     initialize_shared_memory,
     load_shared_memory,
     build_default_sections,
+    store_extracted_texts,
 )
 
 logger = logging.getLogger(__name__)
@@ -370,6 +371,18 @@ def context_initializer_node(state: ProposalState) -> Dict[str, Any]:
         sections = shared_memory.get("sections", {})
     except Exception:
         sections = build_default_sections()
+
+    # Persist extracted texts so downstream generate calls can skip re-extraction
+    try:
+        store_extracted_texts(
+            project_dir=project_dir,
+            tender_text=tender_text,
+            company_assets_text=company_assets_text,
+            bid_details_text=bid_details_text,
+            additional_assets_text=additional_assets_text,
+        )
+    except Exception as exc:
+        logger.warning("Failed to cache extracted texts: %s", exc)
 
     # ------------------------------------------------------------------
     # Step 4: Return State Update

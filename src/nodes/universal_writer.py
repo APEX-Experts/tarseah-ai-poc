@@ -204,6 +204,109 @@ SECTION_KEYWORDS: Dict[str, list[str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Per-Section Document Source Routing
+# ---------------------------------------------------------------------------
+# Each section only receives the document sources it actually needs.
+# This prevents sending irrelevant content (e.g., company profile text
+# to the timeline section) which wastes tokens and dilutes context quality.
+#
+# Keys: "tender", "company", "bid", "additional"
+# Values: True = include full text, "filter" = include keyword-filtered text
+
+SECTION_DOC_ROUTING: Dict[str, Dict[str, bool | str]] = {
+    "cover_letter":        {"tender": "filter", "company": "filter", "bid": False,    "additional": False},
+    "executive_summary":   {"tender": False,    "company": True,     "bid": True,     "additional": False},
+    "scope_understanding": {"tender": True,     "company": False,    "bid": True,     "additional": False},
+    "vision_2030":         {"tender": "filter", "company": False,    "bid": False,    "additional": False},
+    "company_profile":     {"tender": False,    "company": True,     "bid": False,    "additional": False},
+    "past_projects":       {"tender": "filter", "company": True,     "bid": False,    "additional": False},
+    "methodology":         {"tender": True,     "company": False,    "bid": True,     "additional": False},
+    "team":                {"tender": False,    "company": True,     "bid": False,    "additional": False},
+    "timeline":            {"tender": True,     "company": False,    "bid": True,     "additional": False},
+    "quality_and_risk":    {"tender": "filter", "company": "filter", "bid": False,    "additional": False},
+    "pricing":             {"tender": True,     "company": False,    "bid": True,     "additional": True},
+}
+
+
+def _route_documents_for_section(
+    section_key: str,
+    tender_text: str,
+    company_assets_text: str,
+    bid_details_text: str,
+    additional_assets_text: str,
+) -> str:
+    """
+    Build the consolidated document context for a specific section by
+    routing only the relevant document sources.
+
+    Uses ``SECTION_DOC_ROUTING`` to determine which documents each section
+    needs and whether they should be included in full or keyword-filtered.
+
+    For ``past_projects``, a special labeled format is used to clearly
+    separate company source data from RFP context.
+
+    Parameters
+    ----------
+    section_key : str
+        The target section being generated.
+    tender_text, company_assets_text, bid_details_text, additional_assets_text : str
+        Raw extracted text from each document category.
+
+    Returns
+    -------
+    str
+        Consolidated, filtered document text ready for the user prompt.
+    """
+    # Special case: past_projects needs labeled sections for clarity
+    if section_key == "past_projects":
+        parts = []
+        if company_assets_text.strip():
+            parts.append(
+                "=== ملف تعريف الشركة وسوابق الأعمال الحقيقية "
+                "(المصدر الوحيد لاستخراج المشاريع السابقة) ===\n"
+                f"{company_assets_text}"
+            )
+        if tender_text.strip():
+            filtered_tender = filter_relevant_context(section_key, tender_text)
+            parts.append(
+                "=== كراسة الشروط والمواصفات للمشروع الحالي "
+                "(مستندات المنافسة - لتحديد مواءمة سوابق الأعمال فقط) ===\n"
+                f"{filtered_tender}"
+            )
+        return "\n\n".join(parts)
+
+    routing = SECTION_DOC_ROUTING.get(section_key)
+    if not routing:
+        # Fallback: combine all and filter
+        all_text = "\n\n".join(
+            doc for doc in [tender_text, company_assets_text, bid_details_text, additional_assets_text]
+            if doc.strip()
+        )
+        return filter_relevant_context(section_key, all_text)
+
+    doc_map = {
+        "tender": tender_text,
+        "company": company_assets_text,
+        "bid": bid_details_text,
+        "additional": additional_assets_text,
+    }
+
+    parts: list[str] = []
+    for doc_key, mode in routing.items():
+        text = doc_map.get(doc_key, "")
+        if not text.strip() or mode is False:
+            continue
+        if mode == "filter":
+            filtered = filter_relevant_context(section_key, text)
+            if filtered.strip():
+                parts.append(filtered)
+        else:  # True — include full text
+            parts.append(text)
+
+    return "\n\n".join(parts)
+
+
 def _chunk_text(text: str, chunk_size: int = 1200) -> list[str]:
     """
     Split text into logical chunks of around chunk_size characters,
@@ -354,13 +457,19 @@ def _compile_shared_memory(sections: Dict[str, Dict[str, str]], exclude_section:
             continue
         entry = sections.get(section_key, {})
         content = entry.get("content", "").strip()
+        summary = entry.get("summary", "").strip()
 
         # Only include sections that have actual generated content
         if content:
             # Use a human-readable label for each section in the compiled block
             readable_label = SECTION_ARABIC_NAMES.get(section_key, section_key.replace("_", " ").title())
+            
+            # Use summary if available, fallback to full content
+            text_to_inject = summary if summary else content
+            label_suffix = " (ملخص)" if summary else ""
+            
             memory_parts.append(
-                f"--- قسم: {readable_label} ---\n{content}"
+                f"--- قسم: {readable_label}{label_suffix} ---\n{text_to_inject}"
             )
 
     if not memory_parts:
@@ -469,6 +578,33 @@ def _build_user_prompt(
                 "### تنبيه هام جداً بشأن الأسعار المفقودة:\n"
                 "- **تنبيه هام جداً**: لم يتم العثور على أي معلومات تسعير أو قيم مالية في مستندات المشروع المقدمة.\n"
                 "- **إلزامية ترك الأسعار فارغة**: يجب ترك جميع حقول الأسعار فارغة تماماً (مثل خانة فارغة في الجداول ` | | ` أو مسافة فارغة) في الجداول وفي النص، ليتم تعبئتها يدوياً لاحقاً. يمنع منعاً باتاً تخمين أو اختراع أي أرقام أو تقديرات مالية لـ (السعر الإفرادي، إجمالي التكلفة، الدفعات، الضمانات، المجاميع).\n"
+            )
+
+    # -- Certification Guardrails --
+    routing = SECTION_DOC_ROUTING.get(section_key, {})
+    has_company_profile = routing.get("company", False) is not False
+
+    if not has_company_profile:
+        if is_english:
+            prompt_parts.append(
+                "**CRITICAL ANTI-HALLUCINATION GUARDRAIL: CERTIFICATIONS & CREDENTIALS**\n"
+                "- You MUST NOT mention, reference, or imply ANY company certifications, ISO standards, or credentials in your output under any circumstances. Focus entirely on the functional requirements without attaching quality badges.\n"
+            )
+        else:
+            prompt_parts.append(
+                "**قيد صارم لمنع التزييف: شهادات الجودة والاعتمادات**\n"
+                "- يجب عليك ألا تذكر، أو تشير إلى، أو تلمح لأي شهادات للشركة، أو معايير ISO، أو اعتمادات في مخرجاتك تحت أي ظرف. ركز بالكامل على المتطلبات الوظيفية دون إرفاق شارات أو شهادات جودة.\n"
+            )
+    else:
+        if is_english:
+            prompt_parts.append(
+                "**CRITICAL ANTI-HALLUCINATION GUARDRAIL: CERTIFICATIONS & CREDENTIALS**\n"
+                "- You are STRICTLY FORBIDDEN from inventing, assuming, or injecting any specific quality, technical, or professional certifications (e.g., ISO 9001, ISO 21001, PMP, ITIL) unless they are EXPLICITLY written word-for-word in the provided Company Profile text. If no certifications are listed, you must use generic terminology such as 'Industry Best Practices', 'Internal Quality Frameworks', or 'High Quality Standards'.\n"
+            )
+        else:
+            prompt_parts.append(
+                "**قيد صارم لمنع التزييف: شهادات الجودة والاعتمادات**\n"
+                "- يمنع منعاً باتاً اختراع، افتراض، أو إضافة أي شهادات جودة أو اعتمادات تقنية أو مهنية (مثل ISO 9001, ISO 21001, PMP, ITIL) ما لم تكن مكتوبة نصاً وبشكل صريح في نص ملف الشركة المرفق. إذا لم تكن هناك شهادات مدرجة، يجب عليك استخدام مصطلحات عامة مثل 'أفضل الممارسات في القطاع' أو 'أطر الجودة الداخلية' أو 'معايير الجودة العالية'.\n"
             )
 
     # -- Strict output constraints --
@@ -622,7 +758,7 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     # Step 4: Construct the Prompt & Enforce Arabic Output
     # ------------------------------------------------------------------
-    # Combine all incoming documents into a single consolidated text block
+    # Route only the relevant documents to this section (token optimization)
     all_docs = [
         tender_text,
         company_assets_text,
@@ -631,26 +767,18 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     ]
     combined_docs_text = "\n\n".join(doc for doc in all_docs if doc.strip())
 
-    # Filter the consolidated text block to only include relevant chunks
-    # Filter the consolidated text block to only include relevant chunks
-    if current_section == "company_profile":
-        # For company profile, use ONLY the company assets text in the input context
-        # to ensure the agent gets real data from these files only.
-        filtered_docs = company_assets_text
-    elif current_section == "past_projects":
-        # For past projects, combine the company assets (source of projects) and the tender text
-        # (competition RFP details) to allow mapping relevance without hallucination.
-        filtered_docs = (
-            "=== ملف تعريف الشركة وسوابق الأعمال الحقيقية (المصدر الوحيد لاستخراج المشاريع السابقة) ===\n"
-            f"{company_assets_text}\n\n"
-            "=== كراسة الشروط والمواصفات للمشروع الحالي (مستندات المنافسة - لتحديد مواءمة سوابق الأعمال فقط) ===\n"
-            f"{tender_text}"
-        )
-    else:
-        filtered_docs = filter_relevant_context(current_section, combined_docs_text)
+    filtered_docs = _route_documents_for_section(
+        section_key=current_section,
+        tender_text=tender_text,
+        company_assets_text=company_assets_text,
+        bid_details_text=bid_details_text,
+        additional_assets_text=additional_assets_text,
+    )
 
-    logger.info("Context Filtering Stats for section '%s':", current_section)
-    logger.info("  Combined Project Documents: %d -> %d chars", len(combined_docs_text), len(filtered_docs))
+    logger.info("Context Routing Stats for section '%s':", current_section)
+    logger.info("  Combined All Documents: %d chars | Routed to section: %d chars (%.0f%% reduction)",
+                len(combined_docs_text), len(filtered_docs),
+                (1 - len(filtered_docs) / len(combined_docs_text)) * 100 if combined_docs_text else 0)
 
     has_prices = True
     if current_section == "pricing":
@@ -807,19 +935,43 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
         return {"error": error_msg}
 
     # ------------------------------------------------------------------
-    # Step 6: Persist to Local JSON (shared_memory.json)
+    # Step 6: Generate Summary & Persist to Local JSON (shared_memory.json)
     # ------------------------------------------------------------------
     # This is the critical persistence step — it writes the generated
     # content back to the local JSON file so that:
     #   a) The next section call can read it as compiled_memory
     #   b) The frontend can poll the file for progress
     #   c) The data survives server restarts
+    
+    # Generate a summary for compiled memory efficiency (Strategy 3)
+    section_summary = ""
+    try:
+        summary_prompt = (
+            f"لخص القسم التالي في 3 إلى 5 نقاط رئيسية (Bullet points) باللغة العربية.\n"
+            f"يجب أن يكون الملخص مكثفاً ويحتوي على أهم الحقائق فقط لكي يستخدم كمرجع للأقسام الأخرى.\n\n"
+            f"{generated_markdown}"
+        )
+        summary_messages = [
+            SystemMessage(content="أنت مساعد ذكي متخصص في تلخيص المستندات بدقة وبإيجاز شديد."),
+            HumanMessage(content=summary_prompt)
+        ]
+        logger.info("Generating summary for section '%s'...", current_section)
+        # Note: We reuse the llm instance from Step 5
+        summary_response = llm.invoke(summary_messages)
+        content_val = summary_response.content
+        if isinstance(content_val, list):
+            content_val = " ".join(str(x) for x in content_val)
+        section_summary = content_val.strip()
+    except Exception as exc:
+        logger.warning("Failed to generate section summary for '%s', continuing without it: %s", current_section, exc)
+
     try:
         update_section(
             project_dir=project_dir,
             section_key=current_section,
             content=generated_markdown,
             status="DRAFT",
+            summary=section_summary,
         )
         logger.info(
             "Section '%s' persisted to shared_memory.json with status='DRAFT'.",
@@ -937,24 +1089,22 @@ async def universal_writer_stream(state: ProposalState):
     section_config = get_section_config(current_section, language=language)
     system_prompt = section_config["system_prompt"]
 
-    # Build prompt (same logic as non-streaming)
+    # Route only the relevant documents to this section (token optimization)
     all_docs = [tender_text, company_assets_text, bid_details_text, additional_assets_text]
     combined_docs_text = "\n\n".join(doc for doc in all_docs if doc.strip())
-    if current_section == "company_profile":
-        # For company profile, use ONLY the company assets text in the input context
-        # to ensure the agent gets real data from these files only.
-        filtered_docs = company_assets_text
-    elif current_section == "past_projects":
-        # For past projects, combine the company assets (source of projects) and the tender text
-        # (competition RFP details) to allow mapping relevance without hallucination.
-        filtered_docs = (
-            "=== ملف تعريف الشركة وسوابق الأعمال الحقيقية (المصدر الوحيد لاستخراج المشاريع السابقة) ===\n"
-            f"{company_assets_text}\n\n"
-            "=== كراسة الشروط والمواصفات للمشروع الحالي (مستندات المنافسة - لتحديد مواءمة سوابق الأعمال فقط) ===\n"
-            f"{tender_text}"
-        )
-    else:
-        filtered_docs = filter_relevant_context(current_section, combined_docs_text)
+
+    filtered_docs = _route_documents_for_section(
+        section_key=current_section,
+        tender_text=tender_text,
+        company_assets_text=company_assets_text,
+        bid_details_text=bid_details_text,
+        additional_assets_text=additional_assets_text,
+    )
+
+    logger.info("Context Routing Stats [STREAM] for section '%s':", current_section)
+    logger.info("  Combined All Documents: %d chars | Routed to section: %d chars (%.0f%% reduction)",
+                len(combined_docs_text), len(filtered_docs),
+                (1 - len(filtered_docs) / len(combined_docs_text)) * 100 if combined_docs_text else 0)
 
     has_prices = True
     if current_section == "pricing":
@@ -1150,12 +1300,36 @@ async def universal_writer_stream(state: ProposalState):
                 len(generated_markdown),
                 current_section,
             )
+            
+            # Generate a summary for compiled memory efficiency (Strategy 3)
+            section_summary = ""
+            try:
+                llm_summary = _get_llm()
+                summary_prompt = (
+                    f"لخص القسم التالي في 3 إلى 5 نقاط رئيسية (Bullet points) باللغة العربية.\n"
+                    f"يجب أن يكون الملخص مكثفاً ويحتوي على أهم الحقائق فقط لكي يستخدم كمرجع للأقسام الأخرى.\n\n"
+                    f"{generated_markdown}"
+                )
+                summary_messages = [
+                    SystemMessage(content="أنت مساعد ذكي متخصص في تلخيص المستندات بدقة وبإيجاز شديد."),
+                    HumanMessage(content=summary_prompt)
+                ]
+                logger.info("Generating summary for streamed section '%s'...", current_section)
+                summary_response = llm_summary.invoke(summary_messages)
+                content_val = summary_response.content
+                if isinstance(content_val, list):
+                    content_val = " ".join(str(x) for x in content_val)
+                section_summary = content_val.strip()
+            except Exception as exc:
+                logger.warning("Failed to generate section summary for '%s', continuing without it: %s", current_section, exc)
+
             try:
                 update_section(
                     project_dir=project_dir,
                     section_key=current_section,
                     content=generated_markdown,
                     status="DRAFT",
+                    summary=section_summary,
                 )
                 logger.info(
                     "Section '%s' persisted to shared_memory.json with status='DRAFT'.",
