@@ -33,7 +33,7 @@ from __future__ import annotations
 import os
 import aiofiles  # pyrefly: ignore[untyped-import]
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Literal, Optional
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -247,7 +247,11 @@ async def initialize_proposal(
 # ---------------------------------------------------------------------------
 
 @router.post("/generate/{project_id}/{section_type}", status_code=status.HTTP_200_OK)
-async def generate_section(project_id: str, section_type: str):
+async def generate_section(
+    project_id: str,
+    section_type: str,
+    language: Literal["ar", "en"] = "ar",
+):
     """
     Generate a single proposal section using the Universal_Writer_Node.
 
@@ -263,6 +267,9 @@ async def generate_section(project_id: str, section_type: str):
     **Path Parameters:**
       - ``project_id``: The project identifier (must match an initialized project).
       - ``section_type``: One of the 11 section keys (e.g. ``methodology``).
+
+    **Query Parameters:**
+      - ``language``: Output language — ``ar`` (Arabic, default) or ``en`` (English).
 
     **Valid section_type values:**
       ``cover_letter``, ``executive_summary``, ``scope_understanding``,
@@ -329,6 +336,7 @@ async def generate_section(project_id: str, section_type: str):
         "additional_assets_text": init_result.get("additional_assets_text", ""),
         "shared_memory_path": init_result.get("shared_memory_path", ""),
         "sections": init_result.get("sections", {}),
+        "language": language,
     }
 
     # 5. Invoke the Universal_Writer_Node
@@ -376,7 +384,11 @@ async def generate_section(project_id: str, section_type: str):
 
 @router.post("/generate/{project_id}/{section_type}/stream")
 @router.get("/generate/{project_id}/{section_type}/stream")
-async def generate_section_stream(project_id: str, section_type: str):
+async def generate_section_stream(
+    project_id: str,
+    section_type: str,
+    language: Literal["ar", "en"] = "ar",
+):
     """
     Stream a single proposal section using the Universal_Writer_Node via SSE.
 
@@ -393,6 +405,9 @@ async def generate_section_stream(project_id: str, section_type: str):
     **Path Parameters:**
       - ``project_id``: The project identifier (must match an initialized project).
       - ``section_type``: One of the 11 section keys (e.g. ``methodology``).
+
+    **Query Parameters:**
+      - ``language``: Output language — ``ar`` (Arabic, default) or ``en`` (English).
     """
     # 1. Sanitize & validate inputs
     clean_project_id = sanitize_project_id(project_id)
@@ -442,6 +457,7 @@ async def generate_section_stream(project_id: str, section_type: str):
         "additional_assets_text": init_result.get("additional_assets_text", ""),
         "shared_memory_path": init_result.get("shared_memory_path", ""),
         "sections": init_result.get("sections", {}),
+        "language": language,
     }
 
     # 5. Return SSE streaming response

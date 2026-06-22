@@ -65,5 +65,6 @@ class ProposalState(TypedDict, total=False):
     error: Optional[str]
     force_reset: bool
     additional_assets_text: str
+    language: Optional[str]  # 'ar' (Arabic) or 'en' (English) — defaults to 'ar'
     input_tokens: Optional[int]
     output_tokens: Optional[int]

@@ -120,7 +120,7 @@ def _get_llm() -> ChatGroq:
 
 
 # ---------------------------------------------------------------------------
-# Section Arabic Names Mapping
+# Section Names Mapping (Arabic & English)
 # ---------------------------------------------------------------------------
 
 SECTION_ARABIC_NAMES: Dict[str, str] = {
@@ -135,6 +135,20 @@ SECTION_ARABIC_NAMES: Dict[str, str] = {
     "timeline": "الجدول الزمني لتنفيذ المشروع",
     "quality_and_risk": "إدارة الجودة والمخاطر",
     "pricing": "العرض المالي والتسعير",
+}
+
+SECTION_ENGLISH_NAMES: Dict[str, str] = {
+    "cover_letter": "Cover Letter",
+    "executive_summary": "Executive Summary",
+    "scope_understanding": "Understanding of the Scope of Work",
+    "vision_2030": "Vision 2030 Alignment",
+    "company_profile": "Company Profile",
+    "past_projects": "Past Projects (Track Record)",
+    "methodology": "Execution Methodology",
+    "team": "Project Team and Structure",
+    "timeline": "Project Timeline and Schedule",
+    "quality_and_risk": "Quality and Risk Management",
+    "pricing": "Financial Proposal and Pricing",
 }
 
 
@@ -369,12 +383,13 @@ def _build_user_prompt(
     project_documents_text: str,
     compiled_memory: str,
     has_prices: bool = True,
+    language: str = "ar",
 ) -> str:
     """
-    Construct the final user prompt that gets sent to Gemini.
+    Construct the final user prompt that gets sent to the LLM.
 
     Injects all available context (consolidated project documents, and previously
-    generated sections) and enforces strict Arabic Markdown output.
+    generated sections) and enforces strict language-specific Markdown output.
 
     Parameters
     ----------
@@ -386,56 +401,103 @@ def _build_user_prompt(
         Compiled text of all previously generated sections.
     has_prices : bool, optional
         Flag indicating if the documents contain any pricing information.
+    language : str, optional
+        Output language — ``'ar'`` (Arabic, default) or ``'en'`` (English).
 
     Returns
     -------
     str
-        The complete user prompt ready for Gemini.
+        The complete user prompt ready for the LLM.
     """
-    arabic_section_name = SECTION_ARABIC_NAMES.get(section_key, section_key.replace("_", " ").title())
+    is_english = language == "en"
+
+    if is_english:
+        section_name = SECTION_ENGLISH_NAMES.get(section_key, section_key.replace("_", " ").title())
+    else:
+        section_name = SECTION_ARABIC_NAMES.get(section_key, section_key.replace("_", " ").title())
 
     # -- Core instruction block --
-    prompt_parts: list[str] = [
-        f"## المطلوب: كتابة قسم «{arabic_section_name}» من العرض الفني\n",
-    ]
+    if is_english:
+        prompt_parts: list[str] = [
+            f"## Required: Write the '{section_name}' section of the Technical Proposal\n",
+        ]
+    else:
+        prompt_parts = [
+            f"## المطلوب: كتابة قسم «{section_name}» من العرض الفني\n",
+        ]
 
     # -- Consolidated project documents context --
     if project_documents_text.strip():
-        prompt_parts.append(
-            "### ١. مستندات ومعلومات المشروع:\n"
-            "```\n"
-            f"{project_documents_text}\n"
-            "```\n"
-        )
+        if is_english:
+            prompt_parts.append(
+                "### 1. Project Documents and Information:\n"
+                "```\n"
+                f"{project_documents_text}\n"
+                "```\n"
+            )
+        else:
+            prompt_parts.append(
+                "### ١. مستندات ومعلومات المشروع:\n"
+                "```\n"
+                f"{project_documents_text}\n"
+                "```\n"
+            )
 
     # -- Previously generated sections (compiled memory) --
     if compiled_memory.strip():
-        prompt_parts.append(
-            "### ٢. الأقسام المكتملة مسبقاً (يجب الحفاظ على الاتساق معها وعدم تكرار محتواها):\n"
-            f"{compiled_memory}\n"
-        )
+        if is_english:
+            prompt_parts.append(
+                "### 2. Previously Completed Sections (maintain consistency and do not repeat their content):\n"
+                f"{compiled_memory}\n"
+            )
+        else:
+            prompt_parts.append(
+                "### ٢. الأقسام المكتملة مسبقاً (يجب الحفاظ على الاتساق معها وعدم تكرار محتواها):\n"
+                f"{compiled_memory}\n"
+            )
 
     # -- Missing pricing alert --
     if section_key == "pricing" and not has_prices:
-        prompt_parts.append(
-            "### تنبيه هام جداً بشأن الأسعار المفقودة:\n"
-            "- **تنبيه هام جداً**: لم يتم العثور على أي معلومات تسعير أو قيم مالية في مستندات المشروع المقدمة.\n"
-            "- **إلزامية ترك الأسعار فارغة**: يجب ترك جميع حقول الأسعار فارغة تماماً (مثل خانة فارغة في الجداول ` | | ` أو مسافة فارغة) في الجداول وفي النص، ليتم تعبئتها يدوياً لاحقاً. يمنع منعاً باتاً تخمين أو اختراع أي أرقام أو تقديرات مالية لـ (السعر الإفرادي، إجمالي التكلفة، الدفعات، الضمانات، المجاميع).\n"
-        )
+        if is_english:
+            prompt_parts.append(
+                "### CRITICAL ALERT — Missing Pricing Data:\n"
+                "- **Very Important Alert**: No pricing information or financial values were found in the provided project documents.\n"
+                "- **Mandatory Blank Pricing**: ALL price fields must be left entirely blank (e.g., empty table cells ` | | ` or blank spaces) in all tables and narrative, to be filled manually later. It is absolutely forbidden to guess or invent any numbers or financial estimates for (Unit Price, Total Cost, Payments, Guarantees, Grand Totals).\n"
+            )
+        else:
+            prompt_parts.append(
+                "### تنبيه هام جداً بشأن الأسعار المفقودة:\n"
+                "- **تنبيه هام جداً**: لم يتم العثور على أي معلومات تسعير أو قيم مالية في مستندات المشروع المقدمة.\n"
+                "- **إلزامية ترك الأسعار فارغة**: يجب ترك جميع حقول الأسعار فارغة تماماً (مثل خانة فارغة في الجداول ` | | ` أو مسافة فارغة) في الجداول وفي النص، ليتم تعبئتها يدوياً لاحقاً. يمنع منعاً باتاً تخمين أو اختراع أي أرقام أو تقديرات مالية لـ (السعر الإفرادي، إجمالي التكلفة، الدفعات، الضمانات، المجاميع).\n"
+            )
 
     # -- Strict output constraints --
-    prompt_parts.append(
-        "### تعليمات الإخراج الصارمة والملزمة:\n"
-        "- **اللغة والترجمة**: يجب أن تكون لغة المخرجات بالكامل هي اللغة العربية الفصحى المهنية الراقية حصرياً.\n"
-        "- **الجداول والعناوين**: يجب ترجمة جميع العناوين الرئيسية والفرعية، وأسماء الأعمدة في الجداول، والمدخلات إلى اللغة العربية بالكامل. يمنع منعاً باتاً ترك عناوين الجداول بالإنجليزية.\n"
-        "- **التواريخ والمدد**: اكتب جميع التواريخ والمدد الزمنية باللغة العربية حصراً (مثل: 'يناير 2027'، 'مدة 4 أسابيع'، 'سنة واحدة') ولا تستخدم التواريخ بالصيغة الإنجليزية.\n"
-        "- **التواريخ والتقويم**: يجب استخدام التقويم الميلادي فقط (Gregorian Calendar Only) في كامل القسم والمستند. يمنع منعاً باتاً خلط التواريخ الهجرية والميلادية في نفس القسم أو الجدول (مثال: لا تكتب '1 أكتوبر' متبوعاً بسنة هجرية). يجب أن تكون جميع المدد والمعالم وبوابات المراحل منطقية زمنياً ومتسقة رياضياً.\n"
-        "- **المصطلحات الفنية**: قم بتعريب المصطلحات والمنهجيات الفنية (مثل Agile, Scrum, Gantt, KPIs, Milestones, Stage Gate) وكتابتها باللغة العربية، مع إمكانية ذكر المصطلح الإنجليزي الأصلي بين قوسين فقط عند الضرورة القصوى (مثل: 'منهجية أجايل (Agile)'، 'مؤشرات الأداء الرئيسية (KPIs)'، 'بوابة المرحلة (Stage Gate)').\n"
-        "- **التنسيق**: استخدم تنسيق Markdown نظيف ومنظم (عناوين، قوائم، جداول حيثما يناسب).\n"
-        "- **ممنوع**: لا تكتب أي مقدمة محادثية أو خاتمة اجتماعية (مثل: 'بالتأكيد'، 'إليك'، 'أتمنى أن يكون مفيداً').\n"
-        "- **ممنوع**: لا تكرر محتوى الأقسام المكتملة مسبقاً — أشر إليها فقط عند الحاجة.\n"
-        "- **البدء المباشر**: ابدأ مباشرة بمحتوى القسم المطلوب دون أي كلام تمهيدي.\n"
-    )
+    if is_english:
+        prompt_parts.append(
+            "### Strict and Mandatory Output Instructions:\n"
+            "- **Language**: The entire output MUST be in professional, high-standard English ONLY.\n"
+            "- **Tables and Headings**: All main headings, subheadings, table column names, and entries must be entirely in English.\n"
+            "- **Dates and Durations**: Write all dates and durations in English (e.g., 'January 2027', '4 weeks', 'one year').\n"
+            "- **Calendar**: Use the Gregorian Calendar ONLY throughout the entire section and document. Do not mix Hijri and Gregorian dates.\n"
+            "- **Technical Terms**: Use standard English technical terms. Include original Arabic terms in parentheses only when absolutely necessary for clarity.\n"
+            "- **Formatting**: Use clean, structured Markdown format (headings, lists, tables where appropriate).\n"
+            "- **Forbidden**: Do not write any conversational preamble or social closing (e.g., 'Sure!', 'Here you go', 'I hope this is helpful').\n"
+            "- **Forbidden**: Do not repeat content from previously completed sections — reference them only when needed.\n"
+            "- **Direct Start**: Begin directly with the section content without any introductory remarks.\n"
+        )
+    else:
+        prompt_parts.append(
+            "### تعليمات الإخراج الصارمة والملزمة:\n"
+            "- **اللغة والترجمة**: يجب أن تكون لغة المخرجات بالكامل هي اللغة العربية الفصحى المهنية الراقية حصرياً.\n"
+            "- **الجداول والعناوين**: يجب ترجمة جميع العناوين الرئيسية والفرعية، وأسماء الأعمدة في الجداول، والمدخلات إلى اللغة العربية بالكامل. يمنع منعاً باتاً ترك عناوين الجداول بالإنجليزية.\n"
+            "- **التواريخ والمدد**: اكتب جميع التواريخ والمدد الزمنية باللغة العربية حصراً (مثل: 'يناير 2027'، 'مدة 4 أسابيع'، 'سنة واحدة') ولا تستخدم التواريخ بالصيغة الإنجليزية.\n"
+            "- **التواريخ والتقويم**: يجب استخدام التقويم الميلادي فقط (Gregorian Calendar Only) في كامل القسم والمستند. يمنع منعاً باتاً خلط التواريخ الهجرية والميلادية في نفس القسم أو الجدول (مثال: لا تكتب '1 أكتوبر' متبوعاً بسنة هجرية). يجب أن تكون جميع المدد والمعالم وبوابات المراحل منطقية زمنياً ومتسقة رياضياً.\n"
+            "- **المصطلحات الفنية**: قم بتعريب المصطلحات والمنهجيات الفنية (مثل Agile, Scrum, Gantt, KPIs, Milestones, Stage Gate) وكتابتها باللغة العربية، مع إمكانية ذكر المصطلح الإنجليزي الأصلي بين قوسين فقط عند الضرورة القصوى (مثل: 'منهجية أجايل (Agile)'، 'مؤشرات الأداء الرئيسية (KPIs)'، 'بوابة المرحلة (Stage Gate)').\n"
+            "- **التنسيق**: استخدم تنسيق Markdown نظيف ومنظم (عناوين، قوائم، جداول حيثما يناسب).\n"
+            "- **ممنوع**: لا تكتب أي مقدمة محادثية أو خاتمة اجتماعية (مثل: 'بالتأكيد'، 'إليك'، 'أتمنى أن يكون مفيداً').\n"
+            "- **ممنوع**: لا تكرر محتوى الأقسام المكتملة مسبقاً — أشر إليها فقط عند الحاجة.\n"
+            "- **البدء المباشر**: ابدأ مباشرة بمحتوى القسم المطلوب دون أي كلام تمهيدي.\n"
+        )
 
     return "\n".join(prompt_parts)
 
@@ -478,6 +540,11 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     current_section_val = state.get("current_section")
     current_section = current_section_val.strip() if isinstance(current_section_val, str) else ""
     
+    # Language: 'ar' (Arabic) or 'en' (English), default 'ar'
+    language = state.get("language", "ar") or "ar"
+    if language not in ("ar", "en"):
+        language = "ar"
+    
     tender_text = state.get("tender_text", "")
     company_assets_text = state.get("company_assets_text", "")
     bid_details_text = state.get("bid_details_text", "")
@@ -505,7 +572,7 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
 
     logger.info("═" * 60)
     logger.info("Universal_Writer_Node — START")
-    logger.info("  Project: %s | Section: %s", project_id, current_section)
+    logger.info("  Project: %s | Section: %s | Language: %s", project_id, current_section, language)
     logger.info("═" * 60)
 
     # ------------------------------------------------------------------
@@ -546,7 +613,7 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     # Step 3: Fetch Section Configuration (Arabic system prompt)
     # ------------------------------------------------------------------
-    section_config = get_section_config(current_section)
+    section_config = get_section_config(current_section, language=language)
     system_prompt = section_config["system_prompt"]
     section_type = section_config["type"]
 
@@ -595,6 +662,7 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
         project_documents_text=filtered_docs,
         compiled_memory=compiled_memory,
         has_prices=has_prices,
+        language=language,
     )
 
     logger.info("User prompt constructed: %d chars total.", len(user_prompt))
@@ -624,7 +692,11 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
         
         if not has_team_info:
             logger.info("Programmatic check: No team info found in documents. Enforcing guardrail.")
-            generated_markdown = "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+            generated_markdown = (
+                "No information about the project team is available in the provided documents."
+                if language == "en"
+                else "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+            )
             
             try:
                 update_section(
@@ -681,11 +753,16 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
             normalized_gen = generated_markdown.lower()
             if (
                 "no available information regarding the project team" in normalized_gen
+                or "no information about the project team" in normalized_gen
                 or "لا تتوفر معلومات" in generated_markdown
                 or "لا توجد معلومات" in generated_markdown
                 or "لا يوجد معلومات" in generated_markdown
             ):
-                generated_markdown = "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+                generated_markdown = (
+                    "No information about the project team is available in the provided documents."
+                    if language == "en"
+                    else "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+                )
 
         logger.info(
             "Groq response received: %d chars for section '%s'.",
@@ -823,6 +900,11 @@ async def universal_writer_stream(state: ProposalState):
     bid_details_text = state.get("bid_details_text", "")
     additional_assets_text = state.get("additional_assets_text", "")
 
+    # Language: 'ar' (Arabic) or 'en' (English), default 'ar'
+    language = state.get("language", "ar") or "ar"
+    if language not in ("ar", "en"):
+        language = "ar"
+
     if not project_id:
         yield f"data: {_json.dumps({'error': 'project_id is required'})}\n\n"
         return
@@ -837,7 +919,7 @@ async def universal_writer_stream(state: ProposalState):
 
     logger.info("═" * 60)
     logger.info("Universal_Writer_Node [STREAM] — START")
-    logger.info("  Project: %s | Section: %s", project_id, current_section)
+    logger.info("  Project: %s | Section: %s | Language: %s", project_id, current_section, language)
     logger.info("═" * 60)
 
     # Load shared memory
@@ -852,7 +934,7 @@ async def universal_writer_stream(state: ProposalState):
     compiled_memory = _compile_shared_memory(sections, exclude_section=current_section)
 
     # Section config
-    section_config = get_section_config(current_section)
+    section_config = get_section_config(current_section, language=language)
     system_prompt = section_config["system_prompt"]
 
     # Build prompt (same logic as non-streaming)
@@ -884,6 +966,7 @@ async def universal_writer_stream(state: ProposalState):
         project_documents_text=filtered_docs,
         compiled_memory=compiled_memory,
         has_prices=has_prices,
+        language=language,
     )
 
     messages = [
@@ -916,7 +999,11 @@ async def universal_writer_stream(state: ProposalState):
         
         if not has_team_info:
             logger.info("Programmatic check [STREAM]: No team info found in documents. Enforcing guardrail.")
-            generated_markdown = "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+            generated_markdown = (
+                "No information about the project team is available in the provided documents."
+                if language == "en"
+                else "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+            )
             
             try:
                 update_section(
@@ -1046,11 +1133,16 @@ async def universal_writer_stream(state: ProposalState):
             normalized_gen = generated_markdown.lower()
             if (
                 "no available information regarding the project team" in normalized_gen
+                or "no information about the project team" in normalized_gen
                 or "لا تتوفر معلومات" in generated_markdown
                 or "لا توجد معلومات" in generated_markdown
                 or "لا يوجد معلومات" in generated_markdown
             ):
-                generated_markdown = "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+                generated_markdown = (
+                    "No information about the project team is available in the provided documents."
+                    if language == "en"
+                    else "لا تتوفر معلومات حول فريق العمل في المستندات المقدمة."
+                )
 
         if generated_markdown:
             logger.info(
