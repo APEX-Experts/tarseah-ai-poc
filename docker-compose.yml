@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  ai-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tarseah-ai-service
+    ports:
+      - "9676:9676"
+    env_file:
+      - .env
+    volumes:
+      - ai-storage:/app/src/storage
+      - ai-assets:/app/src/Assets
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9676/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - trseah-network
+
+volumes:
+  ai-storage:
+    driver: local
+  ai-assets:
+    driver: local
+
+networks:
+  trseah-network:
+    external: true
