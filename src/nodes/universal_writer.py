@@ -166,8 +166,16 @@ SECTION_KEYWORDS: Dict[str, list[str]] = {
         "executive", "summary", "overview", "value", "proposition", "goals", "objectives"
     ],
     "scope_understanding": [
+        # Arabic: project scope, requirements, deliverables, constraints, specifications
         "نطاق", "العمل", "فهم", "متطلبات", "مخرجات", "أهداف", "قيود", "محددات", "كراسة", "الشروط",
-        "scope", "understanding", "requirements", "objectives", "deliverables", "constraints", "rfp"
+        "مشروع", "خدمات", "أعمال", "مهام", "أنشطة", "تقنية", "فنية", "وظيفي", "مواصفات", "معايير",
+        "اشتراطات", "بنود", "التزام", "تعاقد", "عقد", "نظام", "حل", "تطوير", "تصميم", "تشغيل",
+        "صيانة", "دعم", "تدريب", "استشارات", "توريد", "تركيب", "إنشاء", "مقاول", "استلام",
+        # English: scope, requirements, deliverables, specifications, compliance
+        "scope", "understanding", "requirements", "objectives", "deliverables", "constraints", "rfp",
+        "project", "services", "works", "tasks", "activities", "technical", "functional",
+        "specifications", "standards", "compliance", "system", "solution", "development",
+        "design", "operation", "maintenance", "support", "training", "supply", "installation",
     ],
     "vision_2030": [
         "رؤية", "2030", "مستهدفات", "سعودة", "وطني", "المحتوى", "المحلي", "التحول", "جودة", "الحياة",
@@ -182,24 +190,50 @@ SECTION_KEYWORDS: Dict[str, list[str]] = {
         "past", "projects", "experience", "track record", "clients", "contracts", "references"
     ],
     "methodology": [
-        "منهجية", "طريقة", "تنفيذ", "مراحل", "خطوات", "تسليم", "مخرجات", "deliverable", "agile", "waterfall",
-        "methodology", "approach", "phases", "execution", "lifecycle", "stages", "processes"
+        # Arabic: methodology, phases, execution, management, governance
+        "منهجية", "طريقة", "تنفيذ", "مراحل", "خطوات", "تسليم", "مخرجات", "إدارة", "تغيير",
+        "حوكمة", "رقابة", "متابعة", "تقارير", "أدوات", "سياسات", "إجراءات", "ضبط", "تنسيق",
+        "اتصال", "تواصل", "موارد", "انتقال", "اختبار", "مراجعة", "اعتماد", "فحص", "تخطيط",
+        "نطاق", "أنشطة", "مهام", "عمليات", "تشغيل", "صيانة", "بوابة",
+        # English: methodology, phases, processes, governance, framework
+        "methodology", "approach", "phases", "execution", "lifecycle", "stages", "processes",
+        "deliverable", "agile", "waterfall", "management", "governance", "monitoring",
+        "reporting", "tools", "procedures", "control", "coordination", "communication",
+        "resources", "transition", "testing", "review", "approval", "planning",
+        "implementation", "framework", "workflow", "strategy", "stage gate",
     ],
     "team": [
         "فريق", "عمل", "هيكل", "إداري", "أدوار", "مسؤوليات", "مدير", "مشروع", "خبرات", "سيرة", "ذاتية",
         "team", "structure", "roles", "responsibilities", "cv", "resume", "staff", "key personnel"
     ],
     "timeline": [
-        "جدول", "زمني", "مدة", "أشهر", "أسابيع", "أيام", "معالم", "تسليم", "خطة", "milestones",
-        "timeline", "schedule", "duration", "plan", "milestone", "phases", "gantt"
+        # Arabic: schedule, duration, milestones, phases, dates, delivery
+        "جدول", "زمني", "مدة", "أشهر", "أسابيع", "أيام", "معالم", "تسليم", "خطة",
+        "فترة", "بداية", "نهاية", "انتهاء", "إكمال", "إنجاز", "موعد", "تاريخ", "سنة",
+        "شهر", "يوم", "أسبوع", "مرحلة", "انطلاق", "بدء", "استلام", "مباشرة", "مراحل",
+        "التنفيذ", "العقد", "الضمان", "أنشطة", "مخرجات", "نطاق",
+        # English: timeline, schedule, milestones, duration, delivery
+        "timeline", "schedule", "duration", "plan", "milestone", "phases", "gantt",
+        "milestones", "period", "start", "end", "completion", "deadline", "week",
+        "month", "year", "delivery", "handover", "commencement", "contract period",
+        "warranty period", "critical path", "activities", "deliverables",
     ],
     "quality_and_risk": [
         "جودة", "مخاطر", "ضمان", "رقابة", "تخفيف", "احتمالية", "أثر", "سجل", "احتياطي", "kpi", "مؤشرات",
         "quality", "risk", "mitigation", "assurance", "control", "likelihood", "impact", "register"
     ],
     "pricing": [
+        # Arabic: financial, pricing, costs, quantities, payment, guarantees
         "مالي", "سعر", "تسعير", "تكلفة", "تكاليف", "جدول", "كميات", "دفع", "شروط", "ضمان",
-        "pricing", "financial", "cost", "budget", "payment", "schedule", "commercial", "rates"
+        "بند", "وحدة", "إفرادي", "إجمالي", "مقطوعية", "مناقصة", "عطاء", "ضريبة", "غرامة",
+        "خصم", "ريال", "مقابل", "أتعاب", "رسوم", "فاتورة", "مستخلص", "دفعة", "استحقاق",
+        "قيمة", "مبلغ", "ميزانية", "أسعار", "عرض", "نطاق", "خدمات", "أعمال", "توريد",
+        # English: pricing, financial, BOQ, costs, quantities, payment terms
+        "pricing", "financial", "cost", "budget", "payment", "schedule", "commercial", "rates",
+        "price", "fee", "amount", "total", "subtotal", "grand total", "boq", "bill of quantities",
+        "unit price", "lump sum", "item", "line item", "guarantee", "warranty", "vat", "tax",
+        "penalty", "discount", "sar", "bid bond", "performance bond", "advance payment",
+        "retention", "invoice", "scope", "deliverables", "services", "supply",
     ]
 }
 
@@ -217,15 +251,25 @@ SECTION_KEYWORDS: Dict[str, list[str]] = {
 SECTION_DOC_ROUTING: Dict[str, Dict[str, bool | str]] = {
     "cover_letter":        {"tender": "filter", "company": "filter", "bid": False,    "additional": False},
     "executive_summary":   {"tender": False,    "company": True,     "bid": True,     "additional": False},
-    "scope_understanding": {"tender": True,     "company": False,    "bid": True,     "additional": False},
+    "scope_understanding": {"tender": "filter", "company": False,    "bid": True,     "additional": False},
     "vision_2030":         {"tender": "filter", "company": False,    "bid": False,    "additional": False},
     "company_profile":     {"tender": False,    "company": True,     "bid": False,    "additional": False},
     "past_projects":       {"tender": "filter", "company": True,     "bid": False,    "additional": False},
-    "methodology":         {"tender": True,     "company": False,    "bid": True,     "additional": False},
+    "methodology":         {"tender": "filter", "company": False,    "bid": True,     "additional": False},
     "team":                {"tender": False,    "company": True,     "bid": False,    "additional": False},
-    "timeline":            {"tender": True,     "company": False,    "bid": True,     "additional": False},
+    "timeline":            {"tender": "filter", "company": False,    "bid": True,     "additional": False},
     "quality_and_risk":    {"tender": "filter", "company": "filter", "bid": False,    "additional": False},
-    "pricing":             {"tender": True,     "company": False,    "bid": True,     "additional": True},
+    "pricing":             {"tender": "filter", "company": False,    "bid": True,     "additional": True},
+}
+
+# Per-section filter configuration — generous budgets for critical sections
+# to preserve quality while still achieving significant token reduction.
+# Sections not listed here use the default max_chars=15000.
+SECTION_FILTER_CONFIG: Dict[str, Dict[str, int]] = {
+    "scope_understanding": {"max_chars": 60000},  # Needs broadest coverage of RFP scope
+    "methodology":         {"max_chars": 45000},  # Needs phase/activity/deliverable details
+    "timeline":            {"max_chars": 40000},  # Needs durations/milestones/schedule
+    "pricing":             {"max_chars": 55000},  # Needs BOQ/items/quantities/payment terms
 }
 
 
@@ -293,12 +337,15 @@ def _route_documents_for_section(
     }
 
     parts: list[str] = []
+    filter_config = SECTION_FILTER_CONFIG.get(section_key, {})
+    section_max_chars = filter_config.get("max_chars", 15000)
+
     for doc_key, mode in routing.items():
         text = doc_map.get(doc_key, "")
         if not text.strip() or mode is False:
             continue
         if mode == "filter":
-            filtered = filter_relevant_context(section_key, text)
+            filtered = filter_relevant_context(section_key, text, max_chars=section_max_chars)
             if filtered.strip():
                 parts.append(filtered)
         else:  # True — include full text
@@ -384,8 +431,17 @@ def has_pricing_info(text: str) -> bool:
 def filter_relevant_context(section_key: str, text: str, max_chars: int = 15000) -> str:
     """
     Filters document text to return only the chunks most relevant to the given section.
-    If the input text is small (less than max_chars), returns the original text to
-    preserve 100% context and ensure backward compatibility/test stability.
+
+    Quality-preservation features:
+      1. **Dynamic top_k**: Scales with max_chars budget (not hardcoded to 10).
+      2. **Budget enforcement**: Stops adding chunks once max_chars is reached.
+      3. **Document-order restoration**: Selected chunks are re-sorted by their
+         original position so the LLM receives a coherent narrative.
+      4. **Guaranteed header inclusion**: Always includes the first 2 chunks
+         of the document (project overview/summary) regardless of keyword score.
+
+    If the input text is already smaller than max_chars, returns it unchanged
+    to preserve 100% context and backward compatibility.
     """
     if not text:
         return ""
@@ -399,42 +455,88 @@ def filter_relevant_context(section_key: str, text: str, max_chars: int = 15000)
 
     keywords = SECTION_KEYWORDS.get(section_key, [])
     if not keywords:
-        return text
+        return text[:max_chars]
 
-    chunks = _chunk_text(text, chunk_size=1200)
+    chunk_size = 1200
+    chunks = _chunk_text(text, chunk_size=chunk_size)
     if not chunks:
         return ""
 
-    scored_chunks = []
-    for chunk in chunks:
+    # Score each chunk, preserving original index for order restoration
+    scored_chunks: list[tuple[int, int, str]] = []
+    for idx, chunk in enumerate(chunks):
         score = 0
         chunk_lower = chunk.lower()
         for kw in keywords:
             score += chunk_lower.count(kw.lower())
-        scored_chunks.append((score, chunk))
+        scored_chunks.append((score, idx, chunk))
 
+    # Dynamic top_k — scales with the char budget so larger budgets capture more
+    top_k = max(10, max_chars // chunk_size)
+
+    # Always include the first 2 chunks (document header/overview is universally relevant)
+    guaranteed_count = min(2, len(chunks))
+    guaranteed_indices: set[int] = set(range(guaranteed_count))
+
+    selected: list[tuple[int, str]] = []
+    total_chars = 0
+
+    # 1. Add guaranteed header chunks first
+    for idx in sorted(guaranteed_indices):
+        chunk = chunks[idx]
+        selected.append((idx, chunk))
+        total_chars += len(chunk)
+
+    # 2. Sort by score descending, then add top-k relevant chunks within budget
     scored_chunks.sort(key=lambda x: x[0], reverse=True)
+    for score, idx, chunk in scored_chunks[:top_k]:
+        if idx in guaranteed_indices:
+            continue  # Already included
+        if score > 0 and total_chars + len(chunk) <= max_chars:
+            selected.append((idx, chunk))
+            total_chars += len(chunk)
 
-    top_k = 10
-    selected_chunks = []
-    for score, chunk in scored_chunks[:top_k]:
-        if score > 0:
-            selected_chunks.append(chunk)
+    # 3. Fallback: if nothing matched by keywords, take a few top chunks
+    if len(selected) <= guaranteed_count:
+        for _, idx, chunk in scored_chunks[:min(5, len(scored_chunks))]:
+            if idx not in {s[0] for s in selected} and total_chars + len(chunk) <= max_chars:
+                selected.append((idx, chunk))
+                total_chars += len(chunk)
 
-    if not selected_chunks:
-        selected_chunks = [chunk for _, chunk in scored_chunks[:min(3, len(scored_chunks))]]
+    # 4. Re-order by original document position to preserve logical flow
+    selected.sort(key=lambda x: x[0])
 
-    return "\n\n...\n\n".join(selected_chunks)
+    logger.info(
+        "filter_relevant_context('%s'): %d/%d chunks selected, %d/%d chars (%.0f%% reduction)",
+        section_key, len(selected), len(chunks), total_chars, len(text),
+        (1 - total_chars / len(text)) * 100 if text else 0,
+    )
+
+    return "\n\n...\n\n".join(chunk for _, chunk in selected)
 
 
 # ---------------------------------------------------------------------------
 # Compiled Memory Builder
 # ---------------------------------------------------------------------------
 
-def _compile_shared_memory(sections: Dict[str, Dict[str, str]], exclude_section: str | None = None) -> str:
+# Maximum total characters for compiled memory to prevent token bloat
+# in later sections (especially pricing which is generated last).
+_COMPILED_MEMORY_MAX_CHARS = 12000
+
+
+def _compile_shared_memory(
+    sections: Dict[str, Dict[str, str]],
+    exclude_section: str | None = None,
+    max_total_chars: int = _COMPILED_MEMORY_MAX_CHARS,
+) -> str:
     """
     Scan all sections in shared_memory and compile non-empty ones into a
     single text block that Gemini can reference for cross-section consistency.
+
+    Enforces a ``max_total_chars`` budget to prevent compiled memory from
+    consuming excessive tokens when many sections have been generated.
+    Sections are included in proposal order until the budget is exhausted;
+    summaries are strongly preferred over full content to maximize coverage.
 
     Parameters
     ----------
@@ -443,6 +545,8 @@ def _compile_shared_memory(sections: Dict[str, Dict[str, str]], exclude_section:
         Each key maps to ``{"content": "...", "status": "..."}``.
     exclude_section : str, optional
         The section key to exclude from the compiled memory block (e.g. the current section being drafted).
+    max_total_chars : int, optional
+        Hard cap on compiled memory size. Defaults to ``_COMPILED_MEMORY_MAX_CHARS``.
 
     Returns
     -------
@@ -451,6 +555,14 @@ def _compile_shared_memory(sections: Dict[str, Dict[str, str]], exclude_section:
         Returns an empty string if no sections have content yet.
     """
     memory_parts: list[str] = []
+
+    header = (
+        "═══════════════════════════════════════════════════\n"
+        "الأقسام التي تم إعدادها مسبقاً (للسياق والاتساق):\n"
+        "═══════════════════════════════════════════════════\n\n"
+    )
+    budget = max_total_chars - len(header)
+    current_size = 0
 
     for section_key in PROPOSAL_SECTIONS:
         if exclude_section and section_key == exclude_section:
@@ -463,24 +575,35 @@ def _compile_shared_memory(sections: Dict[str, Dict[str, str]], exclude_section:
         if content:
             # Use a human-readable label for each section in the compiled block
             readable_label = SECTION_ARABIC_NAMES.get(section_key, section_key.replace("_", " ").title())
-            
+
             # Use summary if available, fallback to full content
             text_to_inject = summary if summary else content
             label_suffix = " (ملخص)" if summary else ""
-            
-            memory_parts.append(
-                f"--- قسم: {readable_label}{label_suffix} ---\n{text_to_inject}"
-            )
+
+            part = f"--- قسم: {readable_label}{label_suffix} ---\n{text_to_inject}"
+            part_size = len(part) + 2  # +2 for "\n\n" separator
+
+            if current_size + part_size <= budget:
+                memory_parts.append(part)
+                current_size += part_size
+            else:
+                # Budget exhausted — log and stop adding more sections
+                logger.info(
+                    "Compiled memory budget reached (%d/%d chars). "
+                    "Skipping remaining sections to stay within token limits.",
+                    current_size, budget,
+                )
+                break
 
     if not memory_parts:
         return ""
 
-    return (
-        "═══════════════════════════════════════════════════\n"
-        "الأقسام التي تم إعدادها مسبقاً (للسياق والاتساق):\n"
-        "═══════════════════════════════════════════════════\n\n"
-        + "\n\n".join(memory_parts)
+    compiled = header + "\n\n".join(memory_parts)
+    logger.info(
+        "Compiled memory: %d sections included, %d chars total.",
+        len(memory_parts), len(compiled),
     )
+    return compiled
 
 
 # ---------------------------------------------------------------------------
