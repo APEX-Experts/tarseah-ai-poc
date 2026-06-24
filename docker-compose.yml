@@ -31,4 +31,4 @@ volumes:
 
 networks:
   trseah-network:
-    external: true
+    driver: bridge
