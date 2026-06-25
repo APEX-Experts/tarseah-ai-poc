@@ -9,38 +9,38 @@ specific proposal section (e.g. ``methodology``, ``risk_management``).
 Execution Flow:
     ┌─────────────────────────────────────────────────────────────────────┐
     │  1. LOAD INPUTS                                                     │
-    │     Extract project_id, current_section, tender_text,              │
-    │     and company_assets_text from the LangGraph ProposalState.      │
+    │     Extract project_id, current_section, tender_text,               │
+    │     and company_assets_text from the LangGraph ProposalState.       │
     │                                                                     │
     │  2. LOAD SHARED MEMORY                                              │
-    │     Open storage/project_{project_id}/shared_memory.json.          │
-    │     Compile all non-empty sections into a `compiled_memory` block  │
-    │     so Gemini can maintain cross-section consistency.               │
+    │     Open storage/project_{project_id}/shared_memory.json.           │
+    │     Compile all non-empty sections into a `compiled_memory` block   │
+    │     so the model can maintain cross-section consistency.            │
     │                                                                     │
     │  3. FETCH SECTION CONFIG                                            │
-    │     Look up the target section in SECTIONS_CONFIG to get its       │
+    │     Look up the target section in SECTIONS_CONFIG to get its        │
     │     unique Arabic system prompt.                                    │
     │                                                                     │
     │  4. CONSTRUCT PROMPT & ENFORCE ARABIC                               │
-    │     Build the user prompt injecting tender_text, company_assets,   │
+    │     Build the user prompt injecting tender_text, company_assets,    │
     │     and compiled_memory. Add strict Arabic output instruction.      │
     │                                                                     │
-    │  5. CALL GEMINI 1.5 FLASH                                           │
-    │     Invoke the model with the system + user prompts.               │
+    │  5. CALL OPENAI                                                     │
+    │     Invoke the model with the system + user prompts.                │
     │                                                                     │
     │  6. PERSIST TO LOCAL JSON                                           │
-    │     Write the generated Markdown into shared_memory.json under     │
-    │     the section key → this links separate API sessions together.   │
+    │     Write the generated Markdown into shared_memory.json under      │
+    │     the section key → this links separate API sessions together.    │
     │                                                                     │
     │  7. RETURN STATE UPDATE                                             │
-    │     Return output_markdown + updated sections to LangGraph.        │
+    │     Return output_markdown + updated sections to LangGraph.         │
     └─────────────────────────────────────────────────────────────────────┘
 
 Why Compiled Memory?
 --------------------
 Each section is generated in a separate API call. Without shared context,
-Gemini would repeat itself or contradict earlier sections. By compiling
-all previously approved/drafted sections into the prompt, we give Gemini
+the model would repeat itself or contradict earlier sections. By compiling
+all previously approved/drafted sections into the prompt, we give the model
 a running narrative of the entire proposal — enforcing consistency without
 an expensive vector database.
 """
@@ -53,7 +53,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict
 
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from models.proposal_state import ProposalState
@@ -73,47 +73,45 @@ logger = logging.getLogger(__name__)
 # Storage root — resolved relative to src/ (same convention as context_initializer)
 _STORAGE_ROOT = Path(__file__).resolve().parent.parent / "storage"
 
-# Groq model configuration
-_MODEL_NAME = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+# OpenAI model configuration
+_MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o")
 _TEMPERATURE = 0.4  # Slightly creative but factually grounded
 _MAX_RETRIES = 3
 # Maximum output tokens — MUST be set explicitly.
-# Without this, the Groq API applies a small default cap (often 1024-4096)
-# which silently truncates large sections (pricing BOQ, timelines, etc.).
-# openai/gpt-oss-20b supports up to 65,536 output tokens;
-# 16,384 provides ample headroom for the largest Arabic proposal sections.
-_MAX_OUTPUT_TOKENS = int(os.getenv("GROQ_MAX_OUTPUT_TOKENS", "16384"))
+# 16,384 provides ample headroom for the largest Arabic proposal sections
+# if using models like gpt-4o or gpt-4-turbo that support up to 16k output tokens.
+_MAX_OUTPUT_TOKENS = int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "16384"))
 
 
 # ---------------------------------------------------------------------------
 # LLM Singleton (module-level to avoid re-initialization on every call)
 # ---------------------------------------------------------------------------
 
-_llm: ChatGroq | None = None
+_llm: ChatOpenAI | None = None
 
 
-def _get_llm() -> ChatGroq:
+def _get_llm() -> ChatOpenAI:
     """
-    Lazy-initialize and return the Groq model instance.
+    Lazy-initialize and return the OpenAI model instance.
 
     Uses module-level caching so the model is created once and reused
     across all section-generation calls within the same server process.
     """
     global _llm
     if _llm is None:
-        model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-        groq_api_key = os.getenv("GROQ_API_KEY")
-        if not groq_api_key:
-            logger.warning("GROQ_API_KEY environment variable is not set. ChatGroq may fail.")
-        _llm = ChatGroq(
+        model_name = os.getenv("OPENAI_MODEL", "gpt-4o")
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            logger.warning("OPENAI_API_KEY environment variable is not set. ChatOpenAI may fail.")
+        _llm = ChatOpenAI(
             model=model_name,
             temperature=_TEMPERATURE,
             max_retries=_MAX_RETRIES,
-            api_key=groq_api_key,
+            api_key=openai_api_key,
             max_tokens=_MAX_OUTPUT_TOKENS,
         )
         logger.info(
-            "Groq model initialized: %s (temp=%.2f, max_tokens=%d)",
+            "OpenAI model initialized: %s (temp=%.2f, max_tokens=%d)",
             model_name, _TEMPERATURE, _MAX_OUTPUT_TOKENS,
         )
     return _llm
@@ -241,12 +239,6 @@ SECTION_KEYWORDS: Dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 # Per-Section Document Source Routing
 # ---------------------------------------------------------------------------
-# Each section only receives the document sources it actually needs.
-# This prevents sending irrelevant content (e.g., company profile text
-# to the timeline section) which wastes tokens and dilutes context quality.
-#
-# Keys: "tender", "company", "bid", "additional"
-# Values: True = include full text, "filter" = include keyword-filtered text
 
 SECTION_DOC_ROUTING: Dict[str, Dict[str, bool | str]] = {
     "cover_letter":        {"tender": "filter", "company": "filter", "bid": False,    "additional": False},
@@ -262,9 +254,6 @@ SECTION_DOC_ROUTING: Dict[str, Dict[str, bool | str]] = {
     "pricing":             {"tender": "filter", "company": False,    "bid": True,     "additional": True},
 }
 
-# Per-section filter configuration — generous budgets for critical sections
-# to preserve quality while still achieving significant token reduction.
-# Sections not listed here use the default max_chars=15000.
 SECTION_FILTER_CONFIG: Dict[str, Dict[str, int]] = {
     "scope_understanding": {"max_chars": 60000},  # Needs broadest coverage of RFP scope
     "methodology":         {"max_chars": 45000},  # Needs phase/activity/deliverable details
@@ -283,26 +272,7 @@ def _route_documents_for_section(
     """
     Build the consolidated document context for a specific section by
     routing only the relevant document sources.
-
-    Uses ``SECTION_DOC_ROUTING`` to determine which documents each section
-    needs and whether they should be included in full or keyword-filtered.
-
-    For ``past_projects``, a special labeled format is used to clearly
-    separate company source data from RFP context.
-
-    Parameters
-    ----------
-    section_key : str
-        The target section being generated.
-    tender_text, company_assets_text, bid_details_text, additional_assets_text : str
-        Raw extracted text from each document category.
-
-    Returns
-    -------
-    str
-        Consolidated, filtered document text ready for the user prompt.
     """
-    # Special case: past_projects needs labeled sections for clarity
     if section_key == "past_projects":
         parts = []
         if company_assets_text.strip():
@@ -322,7 +292,6 @@ def _route_documents_for_section(
 
     routing = SECTION_DOC_ROUTING.get(section_key)
     if not routing:
-        # Fallback: combine all and filter
         all_text = "\n\n".join(
             doc for doc in [tender_text, company_assets_text, bid_details_text, additional_assets_text]
             if doc.strip()
@@ -431,17 +400,6 @@ def has_pricing_info(text: str) -> bool:
 def filter_relevant_context(section_key: str, text: str, max_chars: int = 15000) -> str:
     """
     Filters document text to return only the chunks most relevant to the given section.
-
-    Quality-preservation features:
-      1. **Dynamic top_k**: Scales with max_chars budget (not hardcoded to 10).
-      2. **Budget enforcement**: Stops adding chunks once max_chars is reached.
-      3. **Document-order restoration**: Selected chunks are re-sorted by their
-         original position so the LLM receives a coherent narrative.
-      4. **Guaranteed header inclusion**: Always includes the first 2 chunks
-         of the document (project overview/summary) regardless of keyword score.
-
-    If the input text is already smaller than max_chars, returns it unchanged
-    to preserve 100% context and backward compatibility.
     """
     if not text:
         return ""
@@ -519,8 +477,6 @@ def filter_relevant_context(section_key: str, text: str, max_chars: int = 15000)
 # Compiled Memory Builder
 # ---------------------------------------------------------------------------
 
-# Maximum total characters for compiled memory to prevent token bloat
-# in later sections (especially pricing which is generated last).
 _COMPILED_MEMORY_MAX_CHARS = 12000
 
 
@@ -531,28 +487,7 @@ def _compile_shared_memory(
 ) -> str:
     """
     Scan all sections in shared_memory and compile non-empty ones into a
-    single text block that Gemini can reference for cross-section consistency.
-
-    Enforces a ``max_total_chars`` budget to prevent compiled memory from
-    consuming excessive tokens when many sections have been generated.
-    Sections are included in proposal order until the budget is exhausted;
-    summaries are strongly preferred over full content to maximize coverage.
-
-    Parameters
-    ----------
-    sections : dict
-        The ``sections`` dict from shared_memory.json.
-        Each key maps to ``{"content": "...", "status": "..."}``.
-    exclude_section : str, optional
-        The section key to exclude from the compiled memory block (e.g. the current section being drafted).
-    max_total_chars : int, optional
-        Hard cap on compiled memory size. Defaults to ``_COMPILED_MEMORY_MAX_CHARS``.
-
-    Returns
-    -------
-    str
-        A formatted text block containing all previously generated sections.
-        Returns an empty string if no sections have content yet.
+    single text block that the model can reference for cross-section consistency.
     """
     memory_parts: list[str] = []
 
@@ -573,10 +508,7 @@ def _compile_shared_memory(
 
         # Only include sections that have actual generated content
         if content:
-            # Use a human-readable label for each section in the compiled block
             readable_label = SECTION_ARABIC_NAMES.get(section_key, section_key.replace("_", " ").title())
-
-            # Use summary if available, fallback to full content
             text_to_inject = summary if summary else content
             label_suffix = " (ملخص)" if summary else ""
 
@@ -587,7 +519,6 @@ def _compile_shared_memory(
                 memory_parts.append(part)
                 current_size += part_size
             else:
-                # Budget exhausted — log and stop adding more sections
                 logger.info(
                     "Compiled memory budget reached (%d/%d chars). "
                     "Skipping remaining sections to stay within token limits.",
@@ -619,27 +550,6 @@ def _build_user_prompt(
 ) -> str:
     """
     Construct the final user prompt that gets sent to the LLM.
-
-    Injects all available context (consolidated project documents, and previously
-    generated sections) and enforces strict language-specific Markdown output.
-
-    Parameters
-    ----------
-    section_key : str
-        The target section to generate.
-    project_documents_text : str
-        Consolidated and filtered text from all project documents.
-    compiled_memory : str
-        Compiled text of all previously generated sections.
-    has_prices : bool, optional
-        Flag indicating if the documents contain any pricing information.
-    language : str, optional
-        Output language — ``'ar'`` (Arabic, default) or ``'en'`` (English).
-
-    Returns
-    -------
-    str
-        The complete user prompt ready for the LLM.
     """
     is_english = language == "en"
 
@@ -769,26 +679,8 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     """
     Universal_Writer_Node — LangGraph Node Function.
 
-    Generates a single proposal section using Gemini, persists it to
+    Generates a single proposal section using OpenAI, persists it to
     the local shared_memory.json file, and returns the updated state.
-
-    Parameters
-    ----------
-    state : ProposalState
-        The current LangGraph state. Must contain:
-          - ``project_id``: The project identifier.
-          - ``current_section``: The section key to generate.
-          - ``tender_text``: Raw tender document text.
-          - ``company_assets_text``: Raw company profile text.
-
-    Returns
-    -------
-    dict
-        Partial state update containing:
-          - ``output_markdown``: The generated Markdown content.
-          - ``sections``: Updated in-memory mirror of all sections.
-          - ``current_section``: Echo back the section that was generated.
-          - ``error``: Set only if something went wrong.
     """
     # ------------------------------------------------------------------
     # Step 1: Load Inputs from LangGraph State
@@ -837,9 +729,6 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     # ------------------------------------------------------------------
     # Step 2: Load Shared Memory & Compile Previously Generated Sections
     # ------------------------------------------------------------------
-    # The shared_memory.json file is the persistent "brain" that links
-    # separate API sessions together. Each call reads what came before
-    # and writes its output back — no database needed.
     project_dir = _STORAGE_ROOT / f"project_{project_id}"
 
     try:
@@ -858,7 +747,7 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
         logger.error(error_msg)
         return {"error": error_msg}
 
-    # Compile all non-empty sections into a text block for Gemini context, excluding the current section
+    # Compile all non-empty sections into a text block for LLM context
     compiled_memory = _compile_shared_memory(sections, exclude_section=current_section)
     if compiled_memory:
         logger.info(
@@ -879,7 +768,7 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
     logger.info("Section type: %s | System prompt length: %d chars", section_type, len(system_prompt))
 
     # ------------------------------------------------------------------
-    # Step 4: Construct the Prompt & Enforce Arabic Output
+    # Step 4: Construct the Prompt & Enforce Output
     # ------------------------------------------------------------------
     # Route only the relevant documents to this section (token optimization)
     all_docs = [
@@ -970,7 +859,7 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
             }
 
     # ------------------------------------------------------------------
-    # Step 5: Call Groq Model
+    # Step 5: Call OpenAI Model
     # ------------------------------------------------------------------
     try:
         llm = _get_llm()
@@ -981,7 +870,7 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
             HumanMessage(content=user_prompt),
         ]
 
-        logger.info("Invoking Groq for section '%s'...", current_section)
+        logger.info("Invoking OpenAI for section '%s'...", current_section)
         response = llm.invoke(messages)
 
         # Extract the generated content from the AIMessage safely
@@ -1016,7 +905,7 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
                 )
 
         logger.info(
-            "Groq response received: %d chars for section '%s'.",
+            "OpenAI response received: %d chars for section '%s'.",
             len(generated_markdown),
             current_section,
         )
@@ -1048,25 +937,18 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
                 "⚠️ TRUNCATION DETECTED for section '%s'! "
                 "finish_reason='length' — the model was forced to stop before completing. "
                 "Output tokens used: %d / max: %d. "
-                "Consider increasing GROQ_MAX_OUTPUT_TOKENS.",
+                "Consider increasing OPENAI_MAX_OUTPUT_TOKENS.",
                 current_section, output_tokens, _MAX_OUTPUT_TOKENS,
             )
 
     except Exception as exc:
-        error_msg = f"Groq invocation failed for section '{current_section}': {exc}"
+        error_msg = f"OpenAI invocation failed for section '{current_section}': {exc}"
         logger.error(error_msg, exc_info=True)
         return {"error": error_msg}
 
     # ------------------------------------------------------------------
     # Step 6: Generate Summary & Persist to Local JSON (shared_memory.json)
     # ------------------------------------------------------------------
-    # This is the critical persistence step — it writes the generated
-    # content back to the local JSON file so that:
-    #   a) The next section call can read it as compiled_memory
-    #   b) The frontend can poll the file for progress
-    #   c) The data survives server restarts
-    
-    # Generate a summary for compiled memory efficiency (Strategy 3)
     section_summary = ""
     try:
         summary_prompt = (
@@ -1079,7 +961,6 @@ def universal_writer_node(state: ProposalState) -> Dict[str, Any]:
             HumanMessage(content=summary_prompt)
         ]
         logger.info("Generating summary for section '%s'...", current_section)
-        # Note: We reuse the llm instance from Step 5
         summary_response = llm.invoke(summary_messages)
         content_val = summary_response.content
         if isinstance(content_val, list):
@@ -1147,17 +1028,8 @@ async def universal_writer_stream(state: ProposalState):
     Async generator that streams LLM output as Server-Sent Events.
 
     Reuses the same prompt-building and context-filtering logic as
-    ``universal_writer_node`` but calls ``llm.stream()`` instead of
+    ``universal_writer_node`` but calls ``llm.astream()`` instead of
     ``llm.invoke()``, yielding each token chunk as it arrives.
-
-    After streaming completes, the full content is persisted to
-    ``shared_memory.json`` and a final ``[DONE]`` event is emitted
-    with token usage metadata.
-
-    Yields
-    ------
-    str
-        SSE-formatted lines (``data: ...\\n\\n``).
     """
     import json as _json
 
@@ -1316,7 +1188,7 @@ async def universal_writer_stream(state: ProposalState):
             return
 
     # ------------------------------------------------------------------
-    # Step 5: Stream from Groq
+    # Step 5: Stream from OpenAI
     # ------------------------------------------------------------------
     full_content_parts: list[str] = []
     input_tokens = 0
@@ -1327,7 +1199,7 @@ async def universal_writer_stream(state: ProposalState):
 
     try:
         llm = _get_llm()
-        logger.info("Streaming Groq for section '%s'...", current_section)
+        logger.info("Streaming OpenAI for section '%s'...", current_section)
 
         async for chunk in llm.astream(messages):
             # Extract text content from the streamed AIMessageChunk
@@ -1373,7 +1245,7 @@ async def universal_writer_stream(state: ProposalState):
                     input_tokens = token_usage.get("prompt_tokens", input_tokens)
                     output_tokens = token_usage.get("completion_tokens", output_tokens)
 
-            # Capture finish_reason from the final chunk (set by Groq on the last streamed chunk)
+            # Capture finish_reason from the final chunk
             chunk_meta = getattr(chunk, "response_metadata", {})
             if chunk_meta and chunk_meta.get("finish_reason"):
                 finish_reason = chunk_meta["finish_reason"]
@@ -1383,7 +1255,7 @@ async def universal_writer_stream(state: ProposalState):
                         "⚠️ TRUNCATION DETECTED [STREAM] for section '%s'! "
                         "finish_reason='length' — the model was forced to stop before completing. "
                         "Output tokens used: %d / max: %d. "
-                        "Consider increasing GROQ_MAX_OUTPUT_TOKENS.",
+                        "Consider increasing OPENAI_MAX_OUTPUT_TOKENS.",
                         current_section, output_tokens, _MAX_OUTPUT_TOKENS,
                     )
 
@@ -1392,7 +1264,7 @@ async def universal_writer_stream(state: ProposalState):
             yield f"data: {_json.dumps({'chunk': text_buffer})}\n\n"
 
     except Exception as exc:
-        error_msg = f"Groq streaming failed for section '{current_section}': {exc}"
+        error_msg = f"OpenAI streaming failed for section '{current_section}': {exc}"
         logger.error(error_msg, exc_info=True)
         yield f"data: {_json.dumps({'error': error_msg})}\n\n"
         return
@@ -1424,7 +1296,7 @@ async def universal_writer_stream(state: ProposalState):
                 current_section,
             )
             
-            # Generate a summary for compiled memory efficiency (Strategy 3)
+            # Generate a summary for compiled memory efficiency
             section_summary = ""
             try:
                 llm_summary = _get_llm()
